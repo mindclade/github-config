@@ -1,0 +1,14 @@
+api_version: github.mindclade.io/v1
+kind: Team
+metadata:
+  id: computational-biology
+  owner_team: computational-biology
+spec:
+  name: computational-biology
+  description: Computational biology domain owners.
+  privacy: closed
+  parent_team: null
+  members: []
+  activation:
+    state: blocked
+    blockers: [unstaffed-team, independent-reviewer-required]

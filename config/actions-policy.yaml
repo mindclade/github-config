@@ -1,0 +1,34 @@
+api_version: github.mindclade.io/v1
+kind: ActionsPolicy
+metadata:
+  id: organization-actions
+  owner_team: security
+spec:
+  mode: selected
+  enabled_repositories: all
+  github_owned_allowed: false
+  verified_creator_allowed: false
+  default_workflow_permissions: read
+  can_approve_pull_request_reviews: false
+  required_pin: commit_sha
+  runner_policy:
+    github_hosted: true
+    self_hosted: false
+    public_fork_pull_requests: false
+  allowed_actions:
+    - source: actions/checkout
+      commit: 3d3c42e5aac5ba805825da76410c181273ba90b1
+    - source: bazel-contrib/setup-bazel
+      commit: c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+    - source: actions/upload-artifact
+      commit: 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+    - source: actions/download-artifact
+      commit: 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+    - source: google-github-actions/auth
+      commit: 7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+    - source: google-github-actions/get-secretmanager-secrets
+      commit: bc9c54b29fdffb8a47776820a7d26e77b379d262
+    - source: actions/create-github-app-token
+      commit: bcd2ba49218906704ab6c1aa796996da409d3eb1
+    - source: opentofu/setup-opentofu
+      commit: a1320f892987e89d278cc92dc5adc984fb93aca4

@@ -1,0 +1,26 @@
+apiVersion: mindclade.io/v1alpha1
+kind: Component
+metadata:
+  name: github-config
+  description: Declarative GitHub organization and repository governance control plane.
+  annotations:
+    github.com/project-slug: mindclade/github-config
+    mindclade.io/qualification-status: PASS_WITH_DEPLOYMENT_PREFLIGHT
+spec:
+  type: governance-control-plane
+  lifecycle: production
+  maturity: production
+  owner: security
+  repository_class: governance-source
+  data_classification: restricted
+  production_authority: true
+  dependencies:
+    - component:dot-github
+    - component:bootstrap
+  provides:
+    - github-governance-catalog-v1
+    - github-governance-plan-evidence-v1
+  release:
+    strategy: reviewed-main
+    artifact: source-commit
+    immutable: true

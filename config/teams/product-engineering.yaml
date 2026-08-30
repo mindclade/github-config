@@ -1,0 +1,14 @@
+api_version: github.mindclade.io/v1
+kind: Team
+metadata:
+  id: product-engineering
+  owner_team: product-engineering
+spec:
+  name: product-engineering
+  description: Product monorepo and application source owners.
+  privacy: closed
+  parent_team: null
+  members: []
+  activation:
+    state: blocked
+    blockers: [unstaffed-team, independent-reviewer-required]

@@ -1,0 +1,83 @@
+api_version: github.mindclade.io/v1
+kind: Organization
+metadata:
+  id: mindclade-organization
+  owner_team: security
+spec:
+  organization_login: mindclade
+  default_repository_permission: none
+  members_can_create_repositories: false
+  members_can_create_public_repositories: false
+  members_can_create_private_repositories: false
+  members_can_create_internal_repositories: false
+  members_can_create_pages: false
+  members_can_fork_private_repositories: false
+  web_commit_signoff_required: true
+  two_factor_requirement: true
+  custom_properties:
+    - name: repository_class
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values:
+        - application-source
+        - deployment-source
+        - governance-source
+        - infrastructure-source
+    - name: owner_team
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values:
+        - architecture
+        - biological-safety
+        - computational-biology
+        - data-platform
+        - developer-platform
+        - ml-systems
+        - platform-operations
+        - product-engineering
+        - release-engineering
+        - security
+    - name: criticality
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values: [low, medium, high, critical]
+    - name: data_classification
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values: [public, internal, confidential, restricted]
+    - name: lifecycle
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values: [active, maintenance, deprecated, archived]
+    - name: ci_profile
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values: [github-actions, buildkite]
+    - name: language_profile
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values:
+        - workflow-yaml
+        - go-opentofu
+        - opentofu
+        - yaml-kustomize
+        - polyglot
+    - name: production_authority
+      value_type: single_select
+      required: true
+      values_editable_by: org_actors
+      allowed_values:
+        - none
+        - reusable-workflows
+        - github-governance
+        - root-trust
+        - cloud-infrastructure
+        - production-deployment
+        - signed-artifacts

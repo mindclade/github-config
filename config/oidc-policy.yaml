@@ -1,0 +1,53 @@
+api_version: github.mindclade.io/v1
+kind: OidcPolicy
+metadata:
+  id: github-actions-oidc
+  owner_team: security
+spec:
+  issuer: https://token.actions.githubusercontent.com
+  use_default_subject: false
+  use_immutable_subject: true
+  include_claim_keys:
+    - repo
+    - context
+    - workflow_ref
+    - workflow_sha
+  audiences:
+    - sts.googleapis.com
+  subjects:
+    - id: github-config-drift-plan
+      repository: github-config
+      workflow: .github/workflows/drift-detection.yml
+      context:
+        type: ref
+        value: refs/heads/main
+      audience: sts.googleapis.com
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: github-config-plan
+      service_account_ref: github-config-plan
+    - id: github-config-protected-plan
+      repository: github-config
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: trusted-build
+      audience: sts.googleapis.com
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: github-config-plan
+      service_account_ref: github-config-plan
+    - id: github-config-protected-apply
+      repository: github-config
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: sts.googleapis.com
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: github-config-apply
+      service_account_ref: github-config-apply
+  activation:
+    state: blocked
+    blockers:
+      - immutable-workflow-revisions-not-qualified
+      - immutable-owner-and-repository-ids-not-qualified
+      - workload-identity-federation-not-qualified

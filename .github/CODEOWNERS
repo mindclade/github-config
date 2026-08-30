@@ -1,0 +1,14 @@
+# Default ownership is deliberately security-led for this governance repository.
+* @mindclade/security
+
+/.github/ @mindclade/security @mindclade/developer-platform
+/config/ @mindclade/security @mindclade/architecture
+/schemas/ @mindclade/architecture @mindclade/security
+/compiler/ @mindclade/developer-platform @mindclade/security
+/opentofu/ @mindclade/platform-operations @mindclade/security
+/policy/ @mindclade/security @mindclade/architecture
+/tests/ @mindclade/developer-platform @mindclade/security
+/runbooks/ @mindclade/platform-operations @mindclade/security
+/MODULE.bazel @mindclade/developer-platform @mindclade/security
+/BUILD.bazel @mindclade/developer-platform @mindclade/security
+/component.yaml @mindclade/architecture @mindclade/security

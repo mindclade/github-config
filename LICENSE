@@ -1,0 +1,153 @@
+Mindclade Proprietary Software Terms
+
+Document-Control: mindclade-license@2
+Document version: 1.1
+Effective date: August 21, 2026
+Classification: Mindclade Proprietary and Confidential
+
+Copyright © 2026 Mindclade, LLC. All Rights Reserved.
+
+SPDX-License-Identifier: LicenseRef-Mindclade-Proprietary
+
+IMPORTANT: These terms apply to Mindclade, LLC.'s first-party software, source
+code, object code, documentation, interfaces, schemas, configuration, build and
+deployment materials, and other authored content in this repository
+(collectively, the "Materials"). They do not replace separate terms governing
+third-party components, datasets, model weights, fonts, media, or other
+independently licensed materials.
+
+1. Legal effect and controlling agreements
+
+These terms give notice of ownership and state conditions on authorization.
+They do not, merely by appearing in this repository, create a confidentiality
+duty for a person who is not otherwise bound or convert lawfully public
+information into confidential information.
+
+If you receive access under a written agreement, employment or contractor
+relationship, account terms, or another legally binding authorization from
+Mindclade, LLC., compliance with these terms is a condition of that access. A
+separate written agreement with Mindclade, LLC. controls to the extent of a
+direct conflict. Nothing here expands the access, license, or rights granted by
+that agreement.
+
+If you are not authorized to possess or use the Materials, do not access, use,
+copy, modify, or disclose them. Notify the Mindclade contact that provided the
+Materials and follow its return or secure-destruction instructions, subject to
+applicable law.
+
+2. Ownership and reservation of rights
+
+As between Mindclade, LLC. and any recipient, and subject to applicable
+third-party rights and any controlling written agreement, Mindclade, LLC.
+retains all right, title, and interest in and to the Materials, including all
+associated copyright, patent, trade-secret, trademark, and other
+intellectual-property rights. The Materials may contain valuable trade secrets
+and confidential information.
+
+Access to or possession of the Materials does not transfer ownership and does
+not grant any license or other right, whether by implication, estoppel, or
+otherwise. All rights not expressly granted in a written agreement signed or
+otherwise formally approved by Mindclade, LLC. are reserved.
+
+3. Conditions of authorized use
+
+You may access, use, reproduce, modify, execute, test, distribute, disclose,
+sublicense, commercialize, or create derivative works from the Materials only
+to the extent expressly authorized by a controlling written agreement and only
+for the purposes, people, systems, and period stated in that agreement.
+Hosting, transmitting, receiving, reviewing, or possessing a copy does not by
+itself constitute authorization. Any unauthorized use or disclosure is
+prohibited.
+
+4. Confidentiality and safeguards
+
+To the extent the Materials are not lawfully publicly available and you receive
+them under circumstances creating a duty of confidentiality, you must:
+
+- use them solely for the authorized Mindclade purpose;
+- restrict access to authorized persons with a need to know and equivalent
+  confidentiality obligations;
+- protect them using at least reasonable administrative, technical, and
+  physical safeguards;
+- not disclose them to any third party without Mindclade, LLC.'s prior written
+  authorization; and
+- promptly report suspected loss, misuse, or unauthorized access or disclosure
+  through an approved Mindclade security or legal channel.
+
+Upon request or termination of authorization, you must return or securely
+destroy the Materials, except for copies retained solely as required by law or
+a controlling written agreement. Any retained copy remains protected for as
+long as it is retained.
+
+5. Public and third-party materials
+
+Information does not become confidential merely because this notice appears on
+a copy. Material that Mindclade, LLC. has expressly classified as PUBLIC or
+lawfully made public without a confidentiality restriction is not subject to
+section 4.
+
+Third-party components and independently licensed materials remain subject to
+their respective license terms, notices, attribution requirements, acceptable-
+use terms, and other restrictions. Those terms control for that material.
+Nothing in these terms expands Mindclade, LLC.'s rights in third-party material
+or restricts rights granted directly by its applicable license.
+
+6. Trademarks and publicity
+
+Mindclade names, logos, wordmarks, product marks, trade dress, and brand assets
+are trademarks or other protected indicia of Mindclade, LLC. No trademark,
+publicity, endorsement, or affiliation right is granted. Authorized internal
+use must follow the current Mindclade brand rules and the scope of the
+controlling written agreement.
+
+7. Protected disclosures
+
+Nothing in these terms prohibits disclosures protected by applicable law,
+including reporting suspected legal violations to a government authority or
+making a protected confidential disclosure to legal counsel. No prior notice
+to Mindclade, LLC. is required where applicable law prohibits such a
+requirement.
+
+U.S. trade-secret immunity notice. Under 18 U.S.C. § 1833(b), an individual
+will not be held criminally or civilly liable under federal or state
+trade-secret law for disclosing a trade secret: (a) in confidence, directly or
+indirectly, to a federal, state, or local government official or to an
+attorney, solely to report or investigate a suspected violation of law; or
+(b) in a complaint or other document filed under seal in a lawsuit or other
+proceeding. An individual who files a retaliation lawsuit may disclose the
+trade secret to their attorney and use it in the proceeding if any document
+containing the trade secret is filed under seal and the trade secret is not
+disclosed except by court order. This notice does not authorize otherwise
+unlawful access to or acquisition of the Materials.
+
+8. Termination and remedies
+
+Authorization ends when the controlling agreement ends, when its stated term
+expires, or when Mindclade, LLC. revokes access as permitted by that agreement
+or applicable law. Sections concerning ownership, confidentiality, third-party
+rights, protected disclosures, remedies, and disclaimers survive to the extent
+their nature or the controlling agreement requires.
+
+Unauthorized use or disclosure may cause irreparable harm for which monetary
+damages are inadequate. Subject to applicable law and any controlling written
+agreement, Mindclade, LLC. may seek injunctive or other equitable relief in
+addition to any other available remedy.
+
+9. No waiver; severability
+
+A failure or delay in enforcing a right is not a waiver. If a provision is held
+unenforceable, it is to be enforced to the maximum extent permitted and the
+remaining provisions continue in effect, subject to the controlling written
+agreement.
+
+10. Disclaimer
+
+EXCEPT AS EXPRESSLY PROVIDED IN A CONTROLLING WRITTEN AGREEMENT, THE MATERIALS
+ARE PROVIDED "AS IS" AND "AS AVAILABLE," WITHOUT WARRANTIES OF ANY KIND,
+EXPRESS, IMPLIED, OR STATUTORY, INCLUDING WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT, TO THE MAXIMUM
+EXTENT PERMITTED BY APPLICABLE LAW.
+
+Questions about authorization or rights must be raised through the legal or
+contract channel identified in the applicable written agreement. Do not place
+confidential Materials in an unapproved email or public issue.

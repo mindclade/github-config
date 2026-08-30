@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.mindclade.io/schemas/v1/integration.schema.json",
+  "title": "Mindclade GitHub integration contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {"const": "github.mindclade.io/v1"},
+    "kind": {"const": "Integration"},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "spec": {"$ref": "#/$defs/spec"}
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner_team"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "blockers"],
+      "properties": {
+        "state": {"enum": ["ready", "blocked"]},
+        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}}
+      }
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "access"],
+      "properties": {
+        "name": {"enum": ["actions", "attestations", "checks", "contents", "metadata", "pull_requests", "statuses"]},
+        "access": {"enum": ["read", "write"]}
+      }
+    },
+    "qualification": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "authority"],
+          "properties": {
+            "state": {"const": "blocked"},
+            "authority": {"const": "bootstrap"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "authority", "evidence_digest", "attestation"],
+          "properties": {
+            "state": {"const": "qualified"},
+            "authority": {"const": "bootstrap"},
+            "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+            "attestation": {"$ref": "#/$defs/attestation"}
+          }
+        }
+      ]
+    },
+    "attested_repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "id"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"},
+        "id": {"type": "integer", "minimum": 1}
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "source_sha", "app_id", "installation_id", "repository_selection", "repositories", "permissions", "events", "created_at", "expires_at"],
+      "properties": {
+        "authority": {"const": "bootstrap"},
+        "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "app_id": {"type": "integer", "minimum": 1},
+        "installation_id": {"type": "integer", "minimum": 1},
+        "repository_selection": {"const": "selected"},
+        "repositories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/attested_repository"}},
+        "permissions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/permission"}},
+        "events": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["check_run", "check_suite", "pull_request", "push", "workflow_run"]}},
+        "created_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+        "expires_at": {"type": "string", "format": "date-time", "pattern": "Z$"}
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "managed", "credential_authority", "plaintext_credentials_forbidden", "repository_selection", "repositories", "permissions", "events", "qualification", "activation"],
+      "properties": {
+        "type": {"const": "github_app"},
+        "actor_id": {"type": "integer", "minimum": 1},
+        "managed": {"type": "boolean"},
+        "credential_authority": {"const": "bootstrap"},
+        "plaintext_credentials_forbidden": {"type": "boolean"},
+        "repository_selection": {"const": "selected"},
+        "repositories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"}},
+        "permissions": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/permission"}},
+        "events": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["check_run", "check_suite", "pull_request", "push", "workflow_run"]}},
+        "qualification": {"$ref": "#/$defs/qualification"},
+        "activation": {"$ref": "#/$defs/activation"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "activation": {
+                "properties": {"state": {"const": "ready"}},
+                "required": ["state"]
+              }
+            }
+          },
+          "then": {
+            "required": ["actor_id"],
+            "properties": {
+              "qualification": {
+                "properties": {"state": {"const": "qualified"}},
+                "required": ["state"]
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

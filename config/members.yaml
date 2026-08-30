@@ -1,0 +1,19 @@
+api_version: github.mindclade.io/v1
+kind: Membership
+metadata:
+  id: organization-members
+  owner_team: security
+spec:
+  scope: organization_members
+  minimum_distinct_admin_principals: 2
+  organization_members:
+    - login: robpearc
+      role: admin
+      principal_id: founder-primary
+    - login: mindclade-founder
+      role: admin
+      principal_id: founder-primary
+  activation:
+    state: blocked
+    blockers:
+      - independent-administrator-required

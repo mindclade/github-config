@@ -1,0 +1,14 @@
+api_version: github.mindclade.io/v1
+kind: Membership
+metadata:
+  id: outside-collaborators
+  owner_team: security
+spec:
+  scope: outside_collaborators
+  require_sponsor: true
+  require_expiry: true
+  max_permission: maintain
+  outside_collaborators: []
+  activation:
+    state: ready
+    blockers: []

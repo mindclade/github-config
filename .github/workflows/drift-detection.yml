@@ -1,0 +1,628 @@
+name: Drift detection
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-governance-drift
+  cancel-in-progress: false
+
+env:
+  OPA_LINUX_AMD64_SHA256: 4814caaf89062b9929e7373c745eb1b73be8aa347be61da06491f68fe910245b
+  OPA_VERSION: 1.20.1
+  ROLLOUT_PHASE: ${{ vars.GHCFG_ROLLOUT_PHASE }}
+  USE_BAZEL_VERSION: 9.2.0
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+
+jobs:
+  drift:
+    name: observe and compare
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Gate effective read identity before third-party actions
+        id: pre-auth-contract-gate
+        env:
+          APPLY_APP_ID: ${{ vars.GHCFG_APPLY_APP_ID }}
+          APPLY_APP_INSTALLATION_ID: ${{ vars.GHCFG_APPLY_APP_INSTALLATION_ID }}
+          APPLY_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_APPLY }}
+          APPLY_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_APPLY }}
+          EXECUTOR_CONTRACT_EVIDENCE_DIGEST: ${{ vars.GHCFG_EXECUTOR_CONTRACT_EVIDENCE_DIGEST }}
+          PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          PLAN_APP_INSTALLATION_ID: ${{ vars.GHCFG_PLAN_APP_INSTALLATION_ID }}
+          PLAN_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          PLAN_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+          STATE_BACKEND_EVIDENCE_DIGEST: ${{ vars.GHCFG_STATE_BACKEND_EVIDENCE_DIGEST }}
+          TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
+          TF_STATE_PREFIX: ${{ vars.GHCFG_STATE_PREFIX }}
+          WIF_QUALIFICATION_EVIDENCE_DIGEST: ${{ vars.GHCFG_WIF_QUALIFICATION_EVIDENCE_DIGEST }}
+          WIF_QUALIFICATION_EXPIRES_EPOCH: ${{ vars.GHCFG_WIF_QUALIFICATION_EXPIRES_EPOCH }}
+          WIF_QUALIFIED_SOURCE_SHA: ${{ vars.GHCFG_WIF_QUALIFIED_SOURCE_SHA }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$WIF_QUALIFIED_SOURCE_SHA" = "$GITHUB_SHA"
+          [[ "$WIF_QUALIFICATION_EVIDENCE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$WIF_QUALIFICATION_EXPIRES_EPOCH" =~ ^[0-9]+$ ]]
+          now_epoch="$(date -u +%s)"
+          (( WIF_QUALIFICATION_EXPIRES_EPOCH > now_epoch ))
+          (( WIF_QUALIFICATION_EXPIRES_EPOCH <= now_epoch + 604800 ))
+          [[ "$PLAN_APP_ID" =~ ^[0-9]+$ && "$APPLY_APP_ID" =~ ^[0-9]+$ && "$PLAN_APP_ID" != "$APPLY_APP_ID" ]]
+          [[ "$PLAN_APP_INSTALLATION_ID" =~ ^[0-9]+$ && "$APPLY_APP_INSTALLATION_ID" =~ ^[0-9]+$ && "$PLAN_APP_INSTALLATION_ID" != "$APPLY_APP_INSTALLATION_ID" ]]
+          state_backend_digest="sha256:$(
+            jq -S -n \
+              --arg bucket "$TF_STATE_BUCKET" \
+              --arg prefix "$TF_STATE_PREFIX" \
+              '{version: "gcs-backend/v1", bucket: $bucket, prefix: $prefix}' \
+              | sha256sum | cut -d' ' -f1
+          )"
+          executor_contract_digest="sha256:$(
+            jq -S -n \
+              --arg audience "sts.googleapis.com" \
+              --arg plan_service_account "$PLAN_SERVICE_ACCOUNT" \
+              --arg plan_wif_provider "$PLAN_WIF_PROVIDER" \
+              --arg apply_service_account "$APPLY_SERVICE_ACCOUNT" \
+              --arg apply_wif_provider "$APPLY_WIF_PROVIDER" \
+              --argjson plan_app_id "$PLAN_APP_ID" \
+              --argjson plan_installation_id "$PLAN_APP_INSTALLATION_ID" \
+              --argjson apply_app_id "$APPLY_APP_ID" \
+              --argjson apply_installation_id "$APPLY_APP_INSTALLATION_ID" '
+                {
+                  version: "github-config-executor/v1",
+                  organization: "mindclade",
+                  audience: $audience,
+                  repositories: [".github", "bootstrap", "github-config", "gitops", "infrastructure-live", "mindclade"],
+                  plan: {
+                    app_id: $plan_app_id,
+                    installation_id: $plan_installation_id,
+                    service_account: $plan_service_account,
+                    workload_identity_provider: $plan_wif_provider
+                  },
+                  apply: {
+                    app_id: $apply_app_id,
+                    installation_id: $apply_installation_id,
+                    service_account: $apply_service_account,
+                    workload_identity_provider: $apply_wif_provider
+                  }
+                }
+              ' | sha256sum | cut -d' ' -f1
+          )"
+          test "$state_backend_digest" = "$STATE_BACKEND_EVIDENCE_DIGEST"
+          test "$executor_contract_digest" = "$EXECUTOR_CONTRACT_EVIDENCE_DIGEST"
+
+      - name: Check out the default branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
+        with:
+          bazelisk-cache: true
+          repository-cache: true
+
+      - name: Configure OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+
+      - name: Verify the bootstrap-qualified workflow identity
+        id: identity-gate
+        env:
+          WIF_QUALIFICATION_EVIDENCE_DIGEST: ${{ vars.GHCFG_WIF_QUALIFICATION_EVIDENCE_DIGEST }}
+          WIF_QUALIFICATION_EXPIRES_EPOCH: ${{ vars.GHCFG_WIF_QUALIFICATION_EXPIRES_EPOCH }}
+          WIF_QUALIFIED_SOURCE_SHA: ${{ vars.GHCFG_WIF_QUALIFIED_SOURCE_SHA }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current_epoch="$(date -u +%s)"
+          maximum_expiry="$((current_epoch + 604800))"
+          test "$WIF_QUALIFIED_SOURCE_SHA" = "$GITHUB_SHA"
+          [[ "$WIF_QUALIFICATION_EVIDENCE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$WIF_QUALIFICATION_EXPIRES_EPOCH" =~ ^[0-9]+$ ]]
+          (( WIF_QUALIFICATION_EXPIRES_EPOCH > current_epoch ))
+          (( WIF_QUALIFICATION_EXPIRES_EPOCH <= maximum_expiry ))
+
+      - name: Evaluate the exact catalog against policy
+        id: policy-gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          opa_path="$RUNNER_TEMP/opa"
+          curl --fail --silent --show-error --location \
+            "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64" \
+            --output "$opa_path"
+          printf '%s  %s\n' "$OPA_LINUX_AMD64_SHA256" "$opa_path" \
+            | sha256sum --check --strict
+          chmod 0755 "$opa_path"
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            --root "$GITHUB_WORKSPACE" policy-input \
+            --output "$RUNNER_TEMP/policy-input.json"
+          "$opa_path" test policy policy/tests
+          for package in \
+            least_privilege \
+            protected_rulesets \
+            workflow_sources \
+            oidc_subjects \
+            environment_approvals; do
+            "$opa_path" eval --fail --data policy \
+              --input "$RUNNER_TEMP/policy-input.json" \
+              "count(data.github_config.${package}.deny) == 0" > /dev/null
+          done
+
+      - name: Validate the effective read executor before authentication
+        id: static-contract-gate
+        env:
+          APPLY_APP_ID: ${{ vars.GHCFG_APPLY_APP_ID }}
+          APPLY_APP_INSTALLATION_ID: ${{ vars.GHCFG_APPLY_APP_INSTALLATION_ID }}
+          APPLY_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_APPLY }}
+          APPLY_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_APPLY }}
+          EXECUTOR_CONTRACT_EVIDENCE_DIGEST: ${{ vars.GHCFG_EXECUTOR_CONTRACT_EVIDENCE_DIGEST }}
+          PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          PLAN_APP_INSTALLATION_ID: ${{ vars.GHCFG_PLAN_APP_INSTALLATION_ID }}
+          PLAN_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          PLAN_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+          STATE_BACKEND_EVIDENCE_DIGEST: ${{ vars.GHCFG_STATE_BACKEND_EVIDENCE_DIGEST }}
+          TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
+          TF_STATE_PREFIX: ${{ vars.GHCFG_STATE_PREFIX }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PLAN_APP_ID" =~ ^[0-9]+$ && "$APPLY_APP_ID" =~ ^[0-9]+$ && "$PLAN_APP_ID" != "$APPLY_APP_ID" ]]
+          [[ "$PLAN_APP_INSTALLATION_ID" =~ ^[0-9]+$ && "$APPLY_APP_INSTALLATION_ID" =~ ^[0-9]+$ && "$PLAN_APP_INSTALLATION_ID" != "$APPLY_APP_INSTALLATION_ID" ]]
+          state_backend_digest="sha256:$(
+            jq -S -n \
+              --arg bucket "$TF_STATE_BUCKET" \
+              --arg prefix "$TF_STATE_PREFIX" \
+              '{version: "gcs-backend/v1", bucket: $bucket, prefix: $prefix}' \
+              | sha256sum | cut -d' ' -f1
+          )"
+          executor_contract_digest="sha256:$(
+            jq -S -n \
+              --arg audience "sts.googleapis.com" \
+              --arg plan_service_account "$PLAN_SERVICE_ACCOUNT" \
+              --arg plan_wif_provider "$PLAN_WIF_PROVIDER" \
+              --arg apply_service_account "$APPLY_SERVICE_ACCOUNT" \
+              --arg apply_wif_provider "$APPLY_WIF_PROVIDER" \
+              --argjson plan_app_id "$PLAN_APP_ID" \
+              --argjson plan_installation_id "$PLAN_APP_INSTALLATION_ID" \
+              --argjson apply_app_id "$APPLY_APP_ID" \
+              --argjson apply_installation_id "$APPLY_APP_INSTALLATION_ID" '
+                {
+                  version: "github-config-executor/v1",
+                  organization: "mindclade",
+                  audience: $audience,
+                  repositories: [".github", "bootstrap", "github-config", "gitops", "infrastructure-live", "mindclade"],
+                  plan: {
+                    app_id: $plan_app_id,
+                    installation_id: $plan_installation_id,
+                    service_account: $plan_service_account,
+                    workload_identity_provider: $plan_wif_provider
+                  },
+                  apply: {
+                    app_id: $apply_app_id,
+                    installation_id: $apply_installation_id,
+                    service_account: $apply_service_account,
+                    workload_identity_provider: $apply_wif_provider
+                  }
+                }
+              ' | sha256sum | cut -d' ' -f1
+          )"
+          test "$state_backend_digest" = "$STATE_BACKEND_EVIDENCE_DIGEST"
+          test "$executor_contract_digest" = "$EXECUTOR_CONTRACT_EVIDENCE_DIGEST"
+
+      - name: Authenticate the read-only cloud identity
+        id: google-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          audience: sts.googleapis.com
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Read the plan App key
+        id: app-key
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            private_key:${{ vars.GHCFG_PLAN_APP_KEY_SECRET }}
+
+      - name: Mint the plan App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.GHCFG_PLAN_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.private_key }}
+          owner: mindclade
+          repositories: |-
+            .github
+            github-config
+            bootstrap
+            infrastructure-live
+            gitops
+            mindclade
+          permission-administration: read
+          permission-actions: read
+          permission-contents: read
+          permission-environments: read
+          permission-members: read
+          permission-metadata: read
+          permission-organization-administration: read
+          permission-organization-custom-org-roles: read
+          permission-organization-custom-properties: read
+          permission-organization-plan: read
+          permission-organization-self-hosted-runners: read
+          permission-repository-custom-properties: read
+          permission-security-events: read
+          permission-vulnerability-alerts: read
+
+      - name: Bind the reviewed executor and backend contracts
+        id: contract-gate
+        env:
+          ACTUAL_PLAN_APP_INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
+          APPLY_APP_ID: ${{ vars.GHCFG_APPLY_APP_ID }}
+          APPLY_APP_INSTALLATION_ID: ${{ vars.GHCFG_APPLY_APP_INSTALLATION_ID }}
+          APPLY_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_APPLY }}
+          APPLY_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_APPLY }}
+          EXECUTOR_CONTRACT_EVIDENCE_DIGEST: ${{ vars.GHCFG_EXECUTOR_CONTRACT_EVIDENCE_DIGEST }}
+          PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          PLAN_APP_INSTALLATION_ID: ${{ vars.GHCFG_PLAN_APP_INSTALLATION_ID }}
+          PLAN_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          PLAN_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+          STATE_BACKEND_EVIDENCE_DIGEST: ${{ vars.GHCFG_STATE_BACKEND_EVIDENCE_DIGEST }}
+          TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
+          TF_STATE_PREFIX: ${{ vars.GHCFG_STATE_PREFIX }}
+          WIF_QUALIFICATION_EVIDENCE_DIGEST: ${{ vars.GHCFG_WIF_QUALIFICATION_EVIDENCE_DIGEST }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PLAN_APP_ID" =~ ^[0-9]+$ && "$APPLY_APP_ID" =~ ^[0-9]+$ && "$PLAN_APP_ID" != "$APPLY_APP_ID" ]]
+          [[ "$PLAN_APP_INSTALLATION_ID" =~ ^[0-9]+$ && "$APPLY_APP_INSTALLATION_ID" =~ ^[0-9]+$ && "$PLAN_APP_INSTALLATION_ID" != "$APPLY_APP_INSTALLATION_ID" ]]
+          test "$ACTUAL_PLAN_APP_INSTALLATION_ID" = "$PLAN_APP_INSTALLATION_ID"
+          state_backend_digest="sha256:$(
+            jq -S -n \
+              --arg bucket "$TF_STATE_BUCKET" \
+              --arg prefix "$TF_STATE_PREFIX" \
+              '{version: "gcs-backend/v1", bucket: $bucket, prefix: $prefix}' \
+              | sha256sum | cut -d' ' -f1
+          )"
+          executor_contract_digest="sha256:$(
+            jq -S -n \
+              --arg audience "sts.googleapis.com" \
+              --arg plan_service_account "$PLAN_SERVICE_ACCOUNT" \
+              --arg plan_wif_provider "$PLAN_WIF_PROVIDER" \
+              --arg apply_service_account "$APPLY_SERVICE_ACCOUNT" \
+              --arg apply_wif_provider "$APPLY_WIF_PROVIDER" \
+              --argjson plan_app_id "$PLAN_APP_ID" \
+              --argjson plan_installation_id "$PLAN_APP_INSTALLATION_ID" \
+              --argjson apply_app_id "$APPLY_APP_ID" \
+              --argjson apply_installation_id "$APPLY_APP_INSTALLATION_ID" '
+                {
+                  version: "github-config-executor/v1",
+                  organization: "mindclade",
+                  audience: $audience,
+                  repositories: [".github", "bootstrap", "github-config", "gitops", "infrastructure-live", "mindclade"],
+                  plan: {
+                    app_id: $plan_app_id,
+                    installation_id: $plan_installation_id,
+                    service_account: $plan_service_account,
+                    workload_identity_provider: $plan_wif_provider
+                  },
+                  apply: {
+                    app_id: $apply_app_id,
+                    installation_id: $apply_installation_id,
+                    service_account: $apply_service_account,
+                    workload_identity_provider: $apply_wif_provider
+                  }
+                }
+              ' | sha256sum | cut -d' ' -f1
+          )"
+          test "$state_backend_digest" = "$STATE_BACKEND_EVIDENCE_DIGEST"
+          test "$executor_contract_digest" = "$EXECUTOR_CONTRACT_EVIDENCE_DIGEST"
+          [[ "$WIF_QUALIFICATION_EVIDENCE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            echo "STATE_BACKEND_DIGEST=$state_backend_digest"
+            echo "EXECUTOR_CONTRACT_DIGEST=$executor_contract_digest"
+            echo "WIF_QUALIFICATION_EVIDENCE_DIGEST=$WIF_QUALIFICATION_EVIDENCE_DIGEST"
+          } >> "$GITHUB_ENV"
+
+      - name: Compile and observe desired state
+        id: observe
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          case "$ROLLOUT_PHASE" in
+            foundation|enforce) ;;
+            *)
+              echo "GHCFG_ROLLOUT_PHASE must be foundation or enforce." >&2
+              exit 1
+              ;;
+          esac
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            compile --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/catalog.json"
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            observe --root "$GITHUB_WORKSPACE" --organization mindclade \
+            --output "$RUNNER_TEMP/observed.json"
+          set +e
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            preflight --root "$GITHUB_WORKSPACE" --desired "$RUNNER_TEMP/catalog.json" \
+            --observed "$RUNNER_TEMP/observed.json" --phase "$ROLLOUT_PHASE" \
+            --output "$RUNNER_TEMP/preflight.json"
+          preflight_status=$?
+          set -e
+          if [[ "$preflight_status" != "0" && "$preflight_status" != "2" ]]; then
+            exit "$preflight_status"
+          fi
+          echo "preflight_exit=$preflight_status" >> "$GITHUB_ENV"
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            diff --root "$GITHUB_WORKSPACE" --desired "$RUNNER_TEMP/catalog.json" \
+            --observed "$RUNNER_TEMP/observed.json" \
+            --output "$RUNNER_TEMP/github-drift.json" || status=$?
+          status="${status:-0}"
+          if [[ "$status" != "0" && "$status" != "2" ]]; then
+            exit "$status"
+          fi
+          echo "github_diff_exit=$status" >> "$GITHUB_ENV"
+
+      - name: Produce the provider drift plan
+        id: tofu-plan
+        env:
+          APPLY_APP_ID: ${{ vars.GHCFG_APPLY_APP_ID }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
+          TF_STATE_PREFIX: ${{ vars.GHCFG_STATE_PREFIX }}
+        run: |
+          set -euo pipefail
+          umask 077
+          cp -R opentofu "$RUNNER_TEMP/opentofu"
+          jq -n \
+            --slurpfile catalog "$RUNNER_TEMP/catalog.json" \
+            --slurpfile preflight "$RUNNER_TEMP/preflight.json" '
+              {
+                adopted_dependabot_security_updates: ($preflight[0].adopted_dependabot_security_updates // {}),
+                catalog: $catalog[0],
+                adopted_environment_ids: ($preflight[0].adopted_environment_ids // {}),
+                adopted_environment_policy_ids: ($preflight[0].adopted_environment_policy_ids // {}),
+                adopted_memberships: ($preflight[0].adopted_memberships // {}),
+                adopted_organization_custom_properties: ($preflight[0].adopted_organization_custom_properties // {}),
+                adopted_organization_oidc_templates: ($preflight[0].adopted_organization_oidc_templates // {}),
+                adopted_outside_collaborator_grants: ($preflight[0].adopted_outside_collaborator_grants // {}),
+                adopted_repository_custom_properties: ($preflight[0].adopted_repository_custom_properties // {}),
+                adopted_repository_names: ($preflight[0].adopted_repository_names // {}),
+                adopted_repository_oidc_templates: ($preflight[0].adopted_repository_oidc_templates // {}),
+                adopted_ruleset_ids: ($preflight[0].adopted_ruleset_ids // {}),
+                adopted_security_manager_assignments: ($preflight[0].adopted_security_manager_assignments // {}),
+                adopted_team_ids: ($preflight[0].adopted_team_ids // {}),
+                adopted_team_memberships: ($preflight[0].adopted_team_memberships // {}),
+                adopted_team_repository_grants: ($preflight[0].adopted_team_repository_grants // {}),
+                qualified_integration_actor_ids: ($preflight[0].qualified_integration_actor_ids // {}),
+                qualified_status_check_integration_ids: ($preflight[0].qualified_status_check_integration_ids // {})
+              }
+            ' > "$RUNNER_TEMP/catalog.auto.tfvars.json"
+          cd "$RUNNER_TEMP/opentofu/live/organization"
+          tofu init -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="prefix=${TF_STATE_PREFIX}"
+          set +e
+          tofu plan -input=false -no-color -detailed-exitcode \
+            -var="rollout_phase=${ROLLOUT_PHASE}" \
+            -var-file="$RUNNER_TEMP/catalog.auto.tfvars.json" \
+            -out="$RUNNER_TEMP/drift.tfplan" \
+            > "$RUNNER_TEMP/tofu-drift.log"
+          status=$?
+          set -e
+          if [[ "$status" == "1" ]]; then
+            jq -n \
+              --arg api_version "github.mindclade.io/v1" \
+              --arg kind "ProviderDriftEvidence" \
+              --arg source_sha "$GITHUB_SHA" \
+              '{api_version: $api_version, kind: $kind, status: "operational_error", source_sha: $source_sha}' \
+              > "$RUNNER_TEMP/drift-evidence.json"
+            echo "exitcode=$status" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          tofu show -json "$RUNNER_TEMP/drift.tfplan" > "$RUNNER_TEMP/plan.json"
+          echo "exitcode=$status" >> "$GITHUB_OUTPUT"
+          created_epoch="$(date -u +%s)"
+          expires_epoch="$((created_epoch + 21600))"
+          (
+            cd "$GITHUB_WORKSPACE"
+            bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+              evidence --root "$GITHUB_WORKSPACE" --catalog "$RUNNER_TEMP/catalog.json" \
+              --observed "$RUNNER_TEMP/observed.json" \
+              --plan "$RUNNER_TEMP/plan.json" --plan-file "$RUNNER_TEMP/drift.tfplan" \
+              --phase "$ROLLOUT_PHASE" --organization mindclade \
+              --change-reference "drift:${GITHUB_RUN_ID}" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" --source-sha "$GITHUB_SHA" \
+              --workflow-sha "$GITHUB_WORKFLOW_SHA" \
+              --actor-id "$GITHUB_ACTOR_ID" --plan-app-id "$PLAN_APP_ID" \
+              --apply-app-id "$APPLY_APP_ID" \
+              --wif-qualification-evidence-digest "$WIF_QUALIFICATION_EVIDENCE_DIGEST" \
+              --state-backend-digest "$STATE_BACKEND_DIGEST" \
+              --executor-contract-digest "$EXECUTOR_CONTRACT_DIGEST" \
+              --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --created-epoch "$created_epoch" --expires-epoch "$expires_epoch" \
+              --output "$RUNNER_TEMP/drift-evidence.json"
+            bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+              verify-evidence --root "$GITHUB_WORKSPACE" \
+              --input "$RUNNER_TEMP/drift-evidence.json" > /dev/null
+          )
+          rm -f "$RUNNER_TEMP/drift.tfplan" "$RUNNER_TEMP/plan.json"
+
+      - name: Produce terminal drift diagnostic
+        id: terminal-diagnostic
+        if: ${{ always() }}
+        env:
+          APP_KEY_OUTCOME: ${{ steps.app-key.outcome }}
+          APP_TOKEN_OUTCOME: ${{ steps.app-token.outcome }}
+          CONTRACT_GATE_OUTCOME: ${{ steps.contract-gate.outcome }}
+          GITHUB_DIFF_EXIT: ${{ env.github_diff_exit }}
+          GOOGLE_AUTH_OUTCOME: ${{ steps.google-auth.outcome }}
+          IDENTITY_GATE_OUTCOME: ${{ steps.identity-gate.outcome }}
+          OBSERVE_OUTCOME: ${{ steps.observe.outcome }}
+          POLICY_GATE_OUTCOME: ${{ steps.policy-gate.outcome }}
+          PRE_AUTH_CONTRACT_GATE_OUTCOME: ${{ steps.pre-auth-contract-gate.outcome }}
+          PREFLIGHT_EXIT: ${{ env.preflight_exit }}
+          PROVIDER_EXIT: ${{ steps.tofu-plan.outputs.exitcode }}
+          PROVIDER_OUTCOME: ${{ steps.tofu-plan.outcome }}
+          STATIC_CONTRACT_GATE_OUTCOME: ${{ steps.static-contract-gate.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          digest_file() {
+            local path="$1"
+            if [[ -f "$path" && ! -L "$path" ]]; then
+              sha256sum "$path" | cut -d' ' -f1
+            fi
+          }
+          catalog_digest="$(digest_file "$RUNNER_TEMP/catalog.json")"
+          drift_digest="$(digest_file "$RUNNER_TEMP/github-drift.json")"
+          evidence_digest="$(digest_file "$RUNNER_TEMP/drift-evidence.json")"
+          preflight_digest="$(digest_file "$RUNNER_TEMP/preflight.json")"
+          status="clean"
+          for outcome in \
+            "$PRE_AUTH_CONTRACT_GATE_OUTCOME" "$IDENTITY_GATE_OUTCOME" "$POLICY_GATE_OUTCOME" \
+            "$STATIC_CONTRACT_GATE_OUTCOME" "$GOOGLE_AUTH_OUTCOME" "$APP_KEY_OUTCOME" "$APP_TOKEN_OUTCOME" \
+            "$CONTRACT_GATE_OUTCOME" "$OBSERVE_OUTCOME" "$PROVIDER_OUTCOME"; do
+            if [[ "$outcome" == "failure" || "$outcome" == "cancelled" ]]; then
+              status="operational_error"
+            fi
+          done
+          if [[ "$PROVIDER_EXIT" == "1" ]]; then
+            status="operational_error"
+          elif [[ "$status" == "clean" ]] && \
+            { [[ "$PREFLIGHT_EXIT" == "2" ]] || [[ "$GITHUB_DIFF_EXIT" == "2" ]] || [[ "$PROVIDER_EXIT" == "2" ]]; }; then
+            status="drift"
+          fi
+          jq -S -n \
+            --arg api_version "github.mindclade.io/v1" \
+            --arg kind "DriftRunDiagnostic" \
+            --arg status "$status" \
+            --arg source_sha "$GITHUB_SHA" \
+            --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+            --arg workflow_sha "$GITHUB_WORKFLOW_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+            --arg actor_id "$GITHUB_ACTOR_ID" \
+            --arg pre_auth_contract_gate "$PRE_AUTH_CONTRACT_GATE_OUTCOME" \
+            --arg identity_gate "$IDENTITY_GATE_OUTCOME" \
+            --arg policy_gate "$POLICY_GATE_OUTCOME" \
+            --arg static_contract_gate "$STATIC_CONTRACT_GATE_OUTCOME" \
+            --arg google_auth "$GOOGLE_AUTH_OUTCOME" \
+            --arg app_key "$APP_KEY_OUTCOME" \
+            --arg app_token "$APP_TOKEN_OUTCOME" \
+            --arg contract_gate "$CONTRACT_GATE_OUTCOME" \
+            --arg observe "$OBSERVE_OUTCOME" \
+            --arg provider "$PROVIDER_OUTCOME" \
+            --arg preflight_exit "$PREFLIGHT_EXIT" \
+            --arg github_diff_exit "$GITHUB_DIFF_EXIT" \
+            --arg provider_exit "$PROVIDER_EXIT" \
+            --arg catalog_digest "$catalog_digest" \
+            --arg drift_digest "$drift_digest" \
+            --arg evidence_digest "$evidence_digest" \
+            --arg preflight_digest "$preflight_digest" '
+              {
+                api_version: $api_version,
+                kind: $kind,
+                status: $status,
+                authorization: "none",
+                bindings: {
+                  source_sha: $source_sha,
+                  workflow_ref: $workflow_ref,
+                  workflow_sha: $workflow_sha,
+                  run_id: $run_id,
+                  run_attempt: $run_attempt,
+                  actor_id: $actor_id
+                },
+                outcomes: {
+                  pre_auth_contract_gate: $pre_auth_contract_gate,
+                  identity_gate: $identity_gate,
+                  policy_gate: $policy_gate,
+                  static_contract_gate: $static_contract_gate,
+                  google_auth: $google_auth,
+                  app_key: $app_key,
+                  app_token: $app_token,
+                  contract_gate: $contract_gate,
+                  observe: $observe,
+                  provider: $provider,
+                  preflight_exit: $preflight_exit,
+                  github_diff_exit: $github_diff_exit,
+                  provider_exit: $provider_exit
+                },
+                digests: ({}
+                  + (if $catalog_digest == "" then {} else {catalog: ("sha256:" + $catalog_digest)} end)
+                  + (if $drift_digest == "" then {} else {github_drift: ("sha256:" + $drift_digest)} end)
+                  + (if $evidence_digest == "" then {} else {drift_evidence: ("sha256:" + $evidence_digest)} end)
+                  + (if $preflight_digest == "" then {} else {preflight: ("sha256:" + $preflight_digest)} end))
+              }
+            ' > "$RUNNER_TEMP/drift-run-diagnostic.base.json"
+          diagnostic_digest="$(sha256sum "$RUNNER_TEMP/drift-run-diagnostic.base.json" | cut -d' ' -f1)"
+          jq -S --arg digest "sha256:${diagnostic_digest}" \
+            '. + {diagnostic_digest: $digest}' \
+            "$RUNNER_TEMP/drift-run-diagnostic.base.json" \
+            > "$RUNNER_TEMP/drift-run-diagnostic.json"
+          rm -f "$RUNNER_TEMP/drift-run-diagnostic.base.json"
+
+      - name: Upload redacted drift evidence
+        if: ${{ always() && steps.pre-auth-contract-gate.outcome == 'success' && steps.identity-gate.outcome == 'success' && steps.policy-gate.outcome == 'success' && steps.static-contract-gate.outcome == 'success' && steps.google-auth.outcome == 'success' && steps.app-key.outcome == 'success' && steps.app-token.outcome == 'success' && steps.contract-gate.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: github-governance-drift-${{ github.sha }}
+          path: |-
+            ${{ runner.temp }}/drift-run-diagnostic.json
+            ${{ runner.temp }}/github-drift.json
+            ${{ runner.temp }}/drift-evidence.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail on drift
+        if: ${{ always() && (failure() || env.preflight_exit == '2' || steps.tofu-plan.outputs.exitcode == '1' || steps.tofu-plan.outputs.exitcode == '2' || env.github_diff_exit == '2') }}
+        run: exit 2
+
+  report:
+    name: report drift failure
+    needs: drift
+    if: ${{ always() && needs.drift.result == 'failure' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open or update the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="GitHub governance drift detected"
+          body_file="$RUNNER_TEMP/drift-issue.md"
+          {
+            echo "Automated drift detection found a catalog difference, qualification regression, or provider error."
+            echo
+            echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo "- Source: \`${GITHUB_SHA}\`"
+            echo
+            echo "Review the redacted evidence artifact. Do not repair settings manually; submit a catalog correction or use the protected recovery runbook."
+          } > "$body_file"
+          issue_number="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [[ -n "$issue_number" ]]; then
+            gh issue edit "$issue_number" --body-file "$body_file"
+          else
+            gh issue create --title "$title" --body-file "$body_file"
+          fi

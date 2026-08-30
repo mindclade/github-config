@@ -1,0 +1,38 @@
+# Bazel outputs and resolution state (the strict blueprint pins dependencies in MODULE.bazel).
+/bazel-bin
+/bazel-github-config
+/bazel-out
+/bazel-testlogs
+/MODULE.bazel.lock
+
+# OpenTofu working data. State and plans must never be committed.
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfplan
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Generated governance inputs and evidence.
+catalog.json
+observed.json
+plan.json
+*-evidence.json
+*-receipt.json
+*-diagnostic.json
+
+# Language and editor caches.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+.idea/
+.vscode/
+
+# Credentials and keys are prohibited even when ignored.
+gha-creds-*.json
+*.pem
+*.key
+*.p12
+.env
+.env.*

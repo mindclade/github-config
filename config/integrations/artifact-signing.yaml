@@ -1,0 +1,28 @@
+api_version: github.mindclade.io/v1
+kind: Integration
+metadata:
+  id: artifact-signing
+  owner_team: release-engineering
+spec:
+  type: github_app
+  managed: false
+  credential_authority: bootstrap
+  plaintext_credentials_forbidden: true
+  repository_selection: selected
+  repositories: [.github, mindclade]
+  permissions:
+    - name: actions
+      access: read
+    - name: attestations
+      access: write
+    - name: contents
+      access: write
+    - name: metadata
+      access: read
+  events: [workflow_run]
+  qualification:
+    state: blocked
+    authority: bootstrap
+  activation:
+    state: blocked
+    blockers: [github-app-installation-not-qualified, signing-root-not-qualified]

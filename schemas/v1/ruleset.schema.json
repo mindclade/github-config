@@ -1,0 +1,123 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.mindclade.io/schemas/v1/ruleset.schema.json",
+  "title": "Mindclade GitHub ruleset configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {"const": "github.mindclade.io/v1"},
+    "kind": {"const": "Ruleset"},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "spec": {"oneOf": [{"$ref": "#/$defs/branchSpec"}, {"$ref": "#/$defs/tagSpec"}]}
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner_team"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+      }
+    },
+    "bypassActor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actor_type", "actor", "mode"],
+      "properties": {
+        "actor_type": {"enum": ["team", "integration"]},
+        "actor": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "mode": {"enum": ["pull_request", "always"]}
+      }
+    },
+    "pullRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required_approving_review_count", "require_code_owner_review", "dismiss_stale_reviews", "require_last_push_approval", "required_review_thread_resolution", "require_distinct_principals"],
+      "properties": {
+        "required_approving_review_count": {"type": "integer", "minimum": 2, "maximum": 10},
+        "require_code_owner_review": {"type": "boolean"},
+        "dismiss_stale_reviews": {"type": "boolean"},
+        "require_last_push_approval": {"type": "boolean"},
+        "required_review_thread_resolution": {"type": "boolean"},
+        "require_distinct_principals": {"type": "boolean"}
+      }
+    },
+    "statusCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["context", "issuer_type", "workflow_path", "triggers"],
+      "properties": {
+        "context": {"type": "string", "minLength": 1, "maxLength": 100},
+        "issuer_type": {"const": "github_actions"},
+        "integration_id": {"type": "integer", "minimum": 1},
+        "workflow_path": {"type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"},
+        "triggers": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"enum": ["pull_request", "merge_group"]}}
+      }
+    },
+    "requiredStatusChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strict", "checks"],
+      "properties": {
+        "strict": {"type": "boolean"},
+        "checks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/statusCheck"}}
+      }
+    },
+    "branchRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deletion", "non_fast_forward", "required_linear_history", "required_signatures", "merge_queue", "pull_request", "required_status_checks"],
+      "properties": {
+        "deletion": {"type": "boolean"},
+        "non_fast_forward": {"type": "boolean"},
+        "required_linear_history": {"type": "boolean"},
+        "required_signatures": {"type": "boolean"},
+        "merge_queue": {"type": "boolean"},
+        "pull_request": {"$ref": "#/$defs/pullRequest"},
+        "required_status_checks": {"$ref": "#/$defs/requiredStatusChecks"}
+      }
+    },
+    "tagRules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deletion", "update", "non_fast_forward", "creation_restricted", "authorized_creator_integrations"],
+      "properties": {
+        "deletion": {"type": "boolean"},
+        "update": {"type": "boolean"},
+        "non_fast_forward": {"type": "boolean"},
+        "creation_restricted": {"type": "boolean"},
+        "authorized_creator_integrations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}}
+      }
+    },
+    "branchSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "enforcement", "repositories", "include_refs", "exclude_refs", "bypass_actors", "rules"],
+      "properties": {
+        "target": {"const": "branch"},
+        "enforcement": {"enum": ["active", "evaluate", "disabled"]},
+        "repositories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"}},
+        "include_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "exclude_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "bypass_actors": {"type": "array", "items": {"$ref": "#/$defs/bypassActor"}},
+        "rules": {"$ref": "#/$defs/branchRules"}
+      }
+    },
+    "tagSpec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "enforcement", "repositories", "include_refs", "exclude_refs", "bypass_actors", "rules"],
+      "properties": {
+        "target": {"const": "tag"},
+        "enforcement": {"enum": ["active", "evaluate", "disabled"]},
+        "repositories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"}},
+        "include_refs": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "exclude_refs": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "bypass_actors": {"type": "array", "items": {"$ref": "#/$defs/bypassActor"}},
+        "rules": {"$ref": "#/$defs/tagRules"}
+      }
+    }
+  }
+}

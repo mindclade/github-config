@@ -1,0 +1,16 @@
+api_version: github.mindclade.io/v1
+kind: Team
+metadata:
+  id: release-engineering
+  owner_team: release-engineering
+spec:
+  name: release-engineering
+  description: Release integrity and production promotion owners.
+  privacy: closed
+  parent_team: null
+  members:
+    - login: mindclade-founder
+      role: maintainer
+  activation:
+    state: blocked
+    blockers: [independent-reviewer-required]

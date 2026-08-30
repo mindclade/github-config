@@ -1,0 +1,18 @@
+api_version: github.mindclade.io/v1
+kind: Team
+metadata:
+  id: security
+  owner_team: security
+spec:
+  name: security
+  description: Organization security, identity, and governance owners.
+  privacy: closed
+  parent_team: null
+  members:
+    - login: robpearc
+      role: maintainer
+    - login: mindclade-founder
+      role: maintainer
+  activation:
+    state: blocked
+    blockers: [independent-reviewer-required]

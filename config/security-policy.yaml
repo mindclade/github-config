@@ -1,0 +1,25 @@
+api_version: github.mindclade.io/v1
+kind: SecurityPolicy
+metadata:
+  id: organization-security
+  owner_team: security
+spec:
+  security_manager_team: security
+  dependency_graph_required: true
+  dependabot_alerts_required: true
+  dependabot_security_updates_required: true
+  advanced_security_required: true
+  code_scanning_default_setup_required: true
+  secret_scanning_required: true
+  secret_scanning_push_protection_required: true
+  private_vulnerability_reporting_required: true
+  required_capabilities:
+    - github-enterprise-cloud
+    - github-advanced-security
+  activation:
+    state: blocked
+    blockers:
+      - enterprise-capabilities-not-qualified
+      - two-factor-enforcement-not-qualified
+      - independent-security-reviewer-required
+      - provider-control-parity-not-qualified

@@ -1,0 +1,156 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+package(default_visibility = ["//visibility:private"])
+
+filegroup(
+    name = "blueprint_source_tree",
+    srcs = glob(
+        [
+            "**/*",
+            ".*",
+            ".github/**/*",
+        ],
+        exclude = [
+            ".git/**",
+            "**/.terraform/**",
+            "**/__pycache__/**",
+            "**/*.pyc",
+            "MODULE.bazel.lock",
+            "bazel-*/**",
+        ],
+    ) + ["//compiler:source_tree"],
+)
+
+filegroup(
+    name = "catalog_sources",
+    srcs = glob([
+        "config/**/*.yaml",
+        "schemas/v1/*.json",
+    ]),
+)
+
+filegroup(
+    name = "workflow_sources",
+    srcs = glob([".github/workflows/*.yml"]),
+)
+
+filegroup(
+    name = "opentofu_sources",
+    srcs = glob(["opentofu/**/*.tf"]),
+)
+
+genrule(
+    name = "policy_input",
+    srcs = [
+        ":catalog_sources",
+        ":workflow_sources",
+    ],
+    outs = ["policy-input.json"],
+    cmd = """
+set -eu
+temporary="$$(mktemp -d \"$(@D)/policy-input-root.XXXXXX\")"
+trap 'rm -rf "$$temporary"' EXIT
+for source in $(SRCS); do
+  relative="$${source#./}"
+  mkdir -p "$$temporary/$$(dirname "$$relative")"
+  cp -L "$$source" "$$temporary/$$relative"
+done
+$(location //compiler:github-configctl) --root "$$temporary" policy-input --output "$@"
+""",
+    tools = ["//compiler:github-configctl"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "catalog_schema_test",
+    size = "small",
+    srcs = ["tests/contract/test_catalog_schema.py"],
+    args = ["$(rootpath //compiler:github-configctl)"],
+    data = [
+        ":blueprint_source_tree",
+        ":catalog_sources",
+        ":workflow_sources",
+        "//compiler:github-configctl",
+    ],
+    legacy_create_init = 0,
+    main = "tests/contract/test_catalog_schema.py",
+)
+
+py_test(
+    name = "compiler_determinism_test",
+    size = "small",
+    srcs = ["tests/contract/test_compiler_determinism.py"],
+    args = ["$(rootpath //compiler:github-configctl)"],
+    data = [
+        ":catalog_sources",
+        "//compiler:github-configctl",
+    ],
+    legacy_create_init = 0,
+    main = "tests/contract/test_compiler_determinism.py",
+)
+
+py_test(
+    name = "ruleset_plan_test",
+    size = "small",
+    srcs = ["tests/plan/test_ruleset_plan.py"],
+    args = ["$(rootpath //compiler:github-configctl)"],
+    data = [
+        ":catalog_sources",
+        "//compiler:github-configctl",
+    ],
+    legacy_create_init = 0,
+    main = "tests/plan/test_ruleset_plan.py",
+)
+
+py_test(
+    name = "permission_reduction_test",
+    size = "small",
+    srcs = ["tests/plan/test_permission_reduction.py"],
+    args = ["$(rootpath //compiler:github-configctl)"],
+    data = [
+        ":catalog_sources",
+        "//compiler:github-configctl",
+    ],
+    legacy_create_init = 0,
+    main = "tests/plan/test_permission_reduction.py",
+)
+
+py_test(
+    name = "observed_state_diff_test",
+    size = "small",
+    srcs = ["tests/drift/test_observed_state_diff.py"],
+    args = ["$(rootpath //compiler:github-configctl)"],
+    data = [
+        ":catalog_sources",
+        "//compiler:github-configctl",
+    ],
+    legacy_create_init = 0,
+    main = "tests/drift/test_observed_state_diff.py",
+)
+
+py_test(
+    name = "last_known_good_restore_test",
+    size = "small",
+    srcs = ["tests/recovery/test_last_known_good_restore.py"],
+    args = ["$(rootpath //compiler:github-configctl)"],
+    data = [
+        ":catalog_sources",
+        ":opentofu_sources",
+        "//compiler:github-configctl",
+    ],
+    legacy_create_init = 0,
+    main = "tests/recovery/test_last_known_good_restore.py",
+)
+
+test_suite(
+    name = "presubmit",
+    tests = [
+        ":catalog_schema_test",
+        ":compiler_determinism_test",
+        ":last_known_good_restore_test",
+        ":observed_state_diff_test",
+        ":permission_reduction_test",
+        ":ruleset_plan_test",
+    ],
+    visibility = ["//visibility:public"],
+)

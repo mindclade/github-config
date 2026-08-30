@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.mindclade.io/schemas/v1/environment.schema.json",
+  "title": "Mindclade GitHub repository environment configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {"const": "github.mindclade.io/v1"},
+    "kind": {"const": "Environment"},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "spec": {"$ref": "#/$defs/spec"}
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner_team"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "blockers"],
+      "properties": {
+        "state": {"enum": ["ready", "blocked"]},
+        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}}
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "team"],
+      "properties": {
+        "type": {"const": "team"},
+        "team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+      }
+    },
+    "approvalPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_required_reviewers", "minimum_distinct_principals", "require_pr_approval", "require_code_owner_review", "require_reviewer_different_from_pr_approver"],
+      "properties": {
+        "minimum_required_reviewers": {"type": "integer", "minimum": 1, "maximum": 6},
+        "minimum_distinct_principals": {"type": "integer", "minimum": 2, "maximum": 10},
+        "require_pr_approval": {"type": "boolean"},
+        "require_code_owner_review": {"type": "boolean"},
+        "require_reviewer_different_from_pr_approver": {"type": "boolean"}
+      }
+    },
+    "branchPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protected_branches", "custom_branch_policies"],
+      "properties": {
+        "protected_branches": {"type": "boolean"},
+        "custom_branch_policies": {"type": "boolean"}
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "repositories", "prevent_self_review", "can_admins_bypass", "required_reviewers", "approval_policy", "deployment_branch_policy", "allowed_workflows", "activation"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "repositories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"}},
+        "prevent_self_review": {"type": "boolean"},
+        "can_admins_bypass": {"type": "boolean"},
+        "required_reviewers": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"$ref": "#/$defs/reviewer"}},
+        "approval_policy": {"$ref": "#/$defs/approvalPolicy"},
+        "deployment_branch_policy": {"$ref": "#/$defs/branchPolicy"},
+        "allowed_workflows": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"}},
+        "activation": {"$ref": "#/$defs/activation"}
+      }
+    }
+  }
+}

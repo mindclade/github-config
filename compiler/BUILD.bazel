@@ -1,0 +1,81 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+package(default_visibility = ["//visibility:private"])
+
+exports_files([
+    "go.mod",
+    "go.sum",
+])
+
+filegroup(
+    name = "source_tree",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
+
+go_library(
+    name = "rendering",
+    srcs = ["internal/rendering/rendering.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/rendering",
+)
+
+go_library(
+    name = "validation",
+    srcs = ["internal/validation/validation.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/validation",
+    deps = [
+        ":rendering",
+        "@com_github_santhosh_tekuri_jsonschema_v5//:jsonschema",
+    ],
+)
+
+go_library(
+    name = "catalog",
+    srcs = ["internal/catalog/catalog.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/catalog",
+    deps = [
+        ":rendering",
+        ":validation",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_library(
+    name = "github_diff",
+    srcs = ["internal/diff/github_diff.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/diff",
+    deps = [
+        ":rendering",
+        ":validation",
+    ],
+)
+
+go_library(
+    name = "plan_evidence",
+    srcs = ["internal/evidence/plan_evidence.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/evidence",
+    deps = [
+        ":rendering",
+        ":validation",
+    ],
+)
+
+go_library(
+    name = "github_configctl_lib",
+    srcs = ["cmd/github-configctl/main.go"],
+    importpath = "github.com/mindclade/github-config/compiler/cmd/github-configctl",
+    visibility = ["//visibility:private"],
+    deps = [
+        ":catalog",
+        ":github_diff",
+        ":plan_evidence",
+        ":rendering",
+        ":validation",
+    ],
+)
+
+go_binary(
+    name = "github-configctl",
+    embed = [":github_configctl_lib"],
+    visibility = ["//visibility:public"],
+)

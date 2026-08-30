@@ -1,0 +1,26 @@
+api_version: github.mindclade.io/v1
+kind: Environment
+metadata:
+  id: release-signing
+  owner_team: release-engineering
+spec:
+  name: release-signing
+  repositories: [.github, mindclade]
+  prevent_self_review: true
+  can_admins_bypass: false
+  required_reviewers:
+    - type: team
+      team: release-engineering
+  approval_policy:
+    minimum_required_reviewers: 1
+    minimum_distinct_principals: 2
+    require_pr_approval: true
+    require_code_owner_review: true
+    require_reviewer_different_from_pr_approver: true
+  deployment_branch_policy:
+    protected_branches: true
+    custom_branch_policies: false
+  allowed_workflows: [.github/workflows/release.yml]
+  activation:
+    state: blocked
+    blockers: [unstaffed-reviewer-team, protected-environment-not-qualified]

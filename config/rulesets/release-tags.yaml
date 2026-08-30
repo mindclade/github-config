@@ -1,0 +1,18 @@
+api_version: github.mindclade.io/v1
+kind: Ruleset
+metadata:
+  id: release-tags
+  owner_team: release-engineering
+spec:
+  target: tag
+  enforcement: active
+  repositories: [.github, mindclade]
+  include_refs: ["refs/tags/v*"]
+  exclude_refs: []
+  bypass_actors: []
+  rules:
+    deletion: true
+    update: true
+    non_fast_forward: true
+    creation_restricted: true
+    authorized_creator_integrations: [artifact-signing]

@@ -1,0 +1,72 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/Detroit
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - github-actions
+    reviewers:
+      - mindclade/security
+      - mindclade/developer-platform
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gomod
+    directory: /compiler
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:15"
+      timezone: America/Detroit
+    groups:
+      compiler-runtime:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - go
+    reviewers:
+      - mindclade/developer-platform
+      - mindclade/security
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: bazel
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: America/Detroit
+    groups:
+      bazel-modules:
+        patterns:
+          - "*"
+    labels:
+      - dependencies
+      - bazel
+    reviewers:
+      - mindclade/developer-platform
+    open-pull-requests-limit: 3
+
+  - package-ecosystem: opentofu
+    directory: /opentofu/live/organization
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:45"
+      timezone: America/Detroit
+    labels:
+      - dependencies
+      - opentofu
+    reviewers:
+      - mindclade/platform-operations
+      - mindclade/security
+    open-pull-requests-limit: 3

@@ -1,0 +1,127 @@
+name: Pull request
+
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pull-request-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_LINUX_AMD64_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  BUILDTOOLS_VERSION: 8.5.1
+  BUILDIFIER_LINUX_AMD64_SHA256: 887377fc64d23a850f4d18a077b5db05b19913f4b99b270d193f3c7334b5a9a7
+  OPA_VERSION: 1.20.1
+  OPA_LINUX_AMD64_SHA256: 4814caaf89062b9929e7373c745eb1b73be8aa347be61da06491f68fe910245b
+  TOFU_VERSION: 1.12.6
+  USE_BAZEL_VERSION: 9.2.0
+
+jobs:
+  required:
+    name: required
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the reviewed revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure Bazel
+        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ runner.os }}-github-config
+          repository-cache: true
+
+      - name: Configure OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ env.TOFU_VERSION }}
+          tofu_wrapper: false
+
+      - name: Install checksum-verified policy and lint tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0755 "${RUNNER_TEMP}/github-config-tools"
+
+          curl --fail --silent --show-error --location \
+            "https://github.com/open-policy-agent/opa/releases/download/v${OPA_VERSION}/opa_linux_amd64" \
+            --output "${RUNNER_TEMP}/github-config-tools/opa"
+          printf '%s  %s\n' \
+            "${OPA_LINUX_AMD64_SHA256}" \
+            "${RUNNER_TEMP}/github-config-tools/opa" \
+            | sha256sum --check --strict
+
+          actionlint_archive="${RUNNER_TEMP}/actionlint.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output "${actionlint_archive}"
+          printf '%s  %s\n' \
+            "${ACTIONLINT_LINUX_AMD64_SHA256}" \
+            "${actionlint_archive}" \
+            | sha256sum --check --strict
+          tar -xzf "${actionlint_archive}" \
+            -C "${RUNNER_TEMP}/github-config-tools" actionlint
+
+          curl --fail --silent --show-error --location \
+            "https://github.com/bazel-contrib/buildtools/releases/download/v${BUILDTOOLS_VERSION}/buildifier-linux-amd64" \
+            --output "${RUNNER_TEMP}/github-config-tools/buildifier"
+          printf '%s  %s\n' \
+            "${BUILDIFIER_LINUX_AMD64_SHA256}" \
+            "${RUNNER_TEMP}/github-config-tools/buildifier" \
+            | sha256sum --check --strict
+
+          chmod 0755 \
+            "${RUNNER_TEMP}/github-config-tools/actionlint" \
+            "${RUNNER_TEMP}/github-config-tools/buildifier" \
+            "${RUNNER_TEMP}/github-config-tools/opa"
+          printf '%s\n' "${RUNNER_TEMP}/github-config-tools" >> "${GITHUB_PATH}"
+
+      - name: Run the hermetic presubmit
+        run: >-
+          bazelisk test //:presubmit
+          --lockfile_mode=off
+          --test_output=errors
+
+      - name: Run Go race and static analysis
+        working-directory: compiler
+        run: |
+          set -euo pipefail
+          test -z "$(gofmt -l .)"
+          go test -race ./...
+          go vet ./...
+
+      - name: Verify policy, OpenTofu, workflows, and Bazel source
+        shell: bash
+        run: |
+          set -euo pipefail
+          opa test policy policy/tests
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            --root "$GITHUB_WORKSPACE" policy-input \
+            --output "$RUNNER_TEMP/policy-input.json"
+          for package in \
+            least_privilege \
+            protected_rulesets \
+            workflow_sources \
+            oidc_subjects \
+            environment_approvals; do
+            opa eval --fail --data policy \
+              --input "$RUNNER_TEMP/policy-input.json" \
+              "count(data.github_config.${package}.deny) == 0" > /dev/null
+          done
+          tofu fmt -check -recursive opentofu
+          tofu -chdir=opentofu/live/organization init -backend=false -input=false
+          tofu -chdir=opentofu/live/organization validate
+          actionlint .github/workflows/*.yml
+          buildifier -mode=check BUILD.bazel compiler/BUILD.bazel MODULE.bazel
+          if git grep -nI -E '[[:blank:]]+$'; then
+            echo "Trailing whitespace is prohibited." >&2
+            exit 1
+          fi

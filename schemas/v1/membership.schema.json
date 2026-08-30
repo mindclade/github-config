@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.mindclade.io/schemas/v1/membership.schema.json",
+  "title": "Mindclade GitHub membership configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {"const": "github.mindclade.io/v1"},
+    "kind": {"const": "Membership"},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "spec": {"oneOf": [{"$ref": "#/$defs/organizationMembers"}, {"$ref": "#/$defs/outsideCollaborators"}]}
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner_team"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+      }
+    },
+    "activation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "blockers"],
+      "properties": {
+        "state": {"enum": ["ready", "blocked"]},
+        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}}
+      }
+    },
+    "organizationMember": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["login", "role", "principal_id"],
+      "properties": {
+        "login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
+        "role": {"enum": ["member", "admin"]},
+        "principal_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+      }
+    },
+    "repositoryPermission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "permission"],
+      "properties": {
+        "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"},
+        "permission": {"enum": ["pull", "triage", "push", "maintain"]}
+      }
+    },
+    "outsideCollaborator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["login", "principal_id", "sponsor_login", "expires_on", "justification", "approval_reference", "repository_permissions"],
+      "properties": {
+        "login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
+        "principal_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "sponsor_login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
+        "expires_on": {"type": "string", "format": "date"},
+        "justification": {"type": "string", "minLength": 10, "maxLength": 500},
+        "approval_reference": {"type": "string", "minLength": 3, "maxLength": 200},
+        "repository_permissions": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/repositoryPermission"}}
+      }
+    },
+    "organizationMembers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "minimum_distinct_admin_principals", "organization_members", "activation"],
+      "properties": {
+        "scope": {"const": "organization_members"},
+        "minimum_distinct_admin_principals": {"type": "integer", "minimum": 2, "maximum": 10},
+        "organization_members": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/organizationMember"}},
+        "activation": {"$ref": "#/$defs/activation"}
+      }
+    },
+    "outsideCollaborators": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "require_sponsor", "require_expiry", "max_permission", "outside_collaborators", "activation"],
+      "properties": {
+        "scope": {"const": "outside_collaborators"},
+        "require_sponsor": {"type": "boolean"},
+        "require_expiry": {"type": "boolean"},
+        "max_permission": {"enum": ["pull", "triage", "push", "maintain"]},
+        "outside_collaborators": {"type": "array", "items": {"$ref": "#/$defs/outsideCollaborator"}},
+        "activation": {"$ref": "#/$defs/activation"}
+      }
+    }
+  }
+}

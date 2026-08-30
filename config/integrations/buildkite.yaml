@@ -1,0 +1,30 @@
+api_version: github.mindclade.io/v1
+kind: Integration
+metadata:
+  id: buildkite
+  owner_team: developer-platform
+spec:
+  type: github_app
+  managed: false
+  credential_authority: bootstrap
+  plaintext_credentials_forbidden: true
+  repository_selection: selected
+  repositories: [mindclade]
+  permissions:
+    - name: checks
+      access: write
+    - name: contents
+      access: read
+    - name: metadata
+      access: read
+    - name: pull_requests
+      access: read
+    - name: statuses
+      access: write
+  events: [check_run, check_suite, pull_request, push]
+  qualification:
+    state: blocked
+    authority: bootstrap
+  activation:
+    state: blocked
+    blockers: [github-app-installation-not-qualified, workload-identity-federation-not-qualified]

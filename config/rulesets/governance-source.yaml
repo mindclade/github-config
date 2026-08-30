@@ -1,0 +1,32 @@
+api_version: github.mindclade.io/v1
+kind: Ruleset
+metadata:
+  id: governance-source
+  owner_team: security
+spec:
+  target: branch
+  enforcement: active
+  repositories: [.github, github-config]
+  include_refs: ["~DEFAULT_BRANCH"]
+  exclude_refs: []
+  bypass_actors: []
+  rules:
+    deletion: true
+    non_fast_forward: true
+    required_linear_history: true
+    required_signatures: true
+    merge_queue: true
+    pull_request:
+      required_approving_review_count: 2
+      require_code_owner_review: true
+      dismiss_stale_reviews: true
+      require_last_push_approval: true
+      required_review_thread_resolution: true
+      require_distinct_principals: true
+    required_status_checks:
+      strict: true
+      checks:
+        - context: Pull request / required
+          issuer_type: github_actions
+          workflow_path: .github/workflows/pull-request.yml
+          triggers: [pull_request, merge_group]

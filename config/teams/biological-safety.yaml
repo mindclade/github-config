@@ -1,0 +1,14 @@
+api_version: github.mindclade.io/v1
+kind: Team
+metadata:
+  id: biological-safety
+  owner_team: biological-safety
+spec:
+  name: biological-safety
+  description: Biological safety policy and escalation owners.
+  privacy: closed
+  parent_team: null
+  members: []
+  activation:
+    state: blocked
+    blockers: [unstaffed-team, independent-reviewer-required]

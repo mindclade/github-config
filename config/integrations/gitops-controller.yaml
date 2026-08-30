@@ -1,0 +1,26 @@
+api_version: github.mindclade.io/v1
+kind: Integration
+metadata:
+  id: gitops-controller
+  owner_team: release-engineering
+spec:
+  type: github_app
+  managed: false
+  credential_authority: bootstrap
+  plaintext_credentials_forbidden: true
+  repository_selection: selected
+  repositories: [gitops]
+  permissions:
+    - name: contents
+      access: read
+    - name: metadata
+      access: read
+    - name: pull_requests
+      access: read
+  events: [push]
+  qualification:
+    state: blocked
+    authority: bootstrap
+  activation:
+    state: blocked
+    blockers: [github-app-installation-not-qualified, workload-identity-federation-not-qualified]

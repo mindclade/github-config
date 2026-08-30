@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.mindclade.io/schemas/v1/repository.schema.json",
+  "title": "Mindclade GitHub repository configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": {"const": "github.mindclade.io/v1"},
+    "kind": {"const": "Repository"},
+    "metadata": {"$ref": "#/$defs/metadata"},
+    "spec": {"$ref": "#/$defs/spec"}
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "owner_team"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issues", "projects", "wiki", "discussions", "downloads"],
+      "properties": {
+        "issues": {"type": "boolean"},
+        "projects": {"type": "boolean"},
+        "wiki": {"type": "boolean"},
+        "discussions": {"type": "boolean"},
+        "downloads": {"type": "boolean"}
+      }
+    },
+    "mergePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allow_squash_merge", "allow_merge_commit", "allow_rebase_merge", "allow_auto_merge", "allow_update_branch", "delete_branch_on_merge", "squash_merge_commit_title", "squash_merge_commit_message"],
+      "properties": {
+        "allow_squash_merge": {"type": "boolean"},
+        "allow_merge_commit": {"type": "boolean"},
+        "allow_rebase_merge": {"type": "boolean"},
+        "allow_auto_merge": {"type": "boolean"},
+        "allow_update_branch": {"type": "boolean"},
+        "delete_branch_on_merge": {"type": "boolean"},
+        "squash_merge_commit_title": {"const": "PR_TITLE"},
+        "squash_merge_commit_message": {"const": "PR_BODY"}
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["vulnerability_alerts", "dependabot_security_updates", "advanced_security", "secret_scanning", "secret_scanning_push_protection"],
+      "properties": {
+        "vulnerability_alerts": {"type": "boolean"},
+        "dependabot_security_updates": {"type": "boolean"},
+        "advanced_security": {"type": "boolean"},
+        "secret_scanning": {"type": "boolean"},
+        "secret_scanning_push_protection": {"type": "boolean"}
+      }
+    },
+    "customProperties": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_class", "owner_team", "criticality", "data_classification", "lifecycle", "ci_profile", "language_profile", "production_authority"],
+      "properties": {
+        "repository_class": {"enum": ["application-source", "deployment-source", "governance-source", "infrastructure-source"]},
+        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "criticality": {"enum": ["low", "medium", "high", "critical"]},
+        "data_classification": {"enum": ["public", "internal", "confidential", "restricted"]},
+        "lifecycle": {"enum": ["active", "maintenance", "deprecated", "archived"]},
+        "ci_profile": {"enum": ["github-actions", "buildkite"]},
+        "language_profile": {"enum": ["workflow-yaml", "go-opentofu", "opentofu", "yaml-kustomize", "polyglot"]},
+        "production_authority": {"enum": ["none", "reusable-workflows", "github-governance", "root-trust", "cloud-infrastructure", "production-deployment", "signed-artifacts"]}
+      }
+    },
+    "teamGrant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["team", "permission"],
+      "properties": {
+        "team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "permission": {"enum": ["pull", "triage", "push", "maintain"]}
+      }
+    },
+    "directCollaborator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["login", "permission"],
+      "properties": {
+        "login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
+        "permission": {"enum": ["pull", "triage", "push", "maintain"]}
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description", "visibility", "archived", "archive_on_destroy", "features", "merge_policy", "security", "custom_properties", "team_grants", "direct_collaborators"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"},
+        "description": {"type": "string", "minLength": 10, "maxLength": 350},
+        "visibility": {"enum": ["private", "internal"]},
+        "archived": {"type": "boolean"},
+        "archive_on_destroy": {"type": "boolean"},
+        "features": {"$ref": "#/$defs/features"},
+        "merge_policy": {"$ref": "#/$defs/mergePolicy"},
+        "security": {"$ref": "#/$defs/security"},
+        "custom_properties": {"$ref": "#/$defs/customProperties"},
+        "team_grants": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/teamGrant"}},
+        "direct_collaborators": {"type": "array", "items": {"$ref": "#/$defs/directCollaborator"}}
+      }
+    }
+  }
+}
