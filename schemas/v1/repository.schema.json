@@ -100,7 +100,7 @@
       "properties": {
         "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"},
         "description": {"type": "string", "minLength": 10, "maxLength": 350},
-        "visibility": {"enum": ["private", "internal"]},
+        "visibility": {"enum": ["public", "private", "internal"]},
         "actions_access_level": {"enum": ["none", "organization"]},
         "archived": {"type": "boolean"},
         "archive_on_destroy": {"type": "boolean"},

@@ -181,7 +181,12 @@ func ManagedProjection(catalog map[string]any) map[string]any {
 		}
 	}
 	result["repositories"] = projectCollection(catalog["repositories"], func(spec map[string]any) map[string]any {
-		projected := pick(spec, []string{"name", "description", "visibility", "actions_access_level", "archived", "features", "merge_policy", "custom_properties"})
+		projected := pick(spec, []string{"name", "description", "visibility", "archived", "features", "merge_policy", "custom_properties"})
+		if strings.EqualFold(fmt.Sprint(spec["visibility"]), "public") {
+			projected["actions_access_level"] = publicRepositoryActionsAccess()
+		} else {
+			projected["actions_access_level"] = spec["actions_access_level"]
+		}
 		projected["web_commit_signoff_required"] = organization["web_commit_signoff_required"]
 		security, _ := spec["security"].(map[string]any)
 		projected["security"] = pick(security, []string{
@@ -1817,7 +1822,12 @@ func projectObservedRepository(
 		return entry
 	}
 	entry["custom_properties"] = projectObservedRepositoryProperties(details.repositoryCustomProperties[name])
-	if access, ok := details.repositoryActionsAccess[name].(map[string]any); ok && !isUnknown(access) {
+	if strings.EqualFold(fmt.Sprint(repository["visibility"]), "public") {
+		// GitHub does not expose the non-public Actions sharing boundary for a
+		// public repository. Preserve the path with explicit effective public
+		// semantics rather than omitting it or asserting an unobservable value.
+		entry["actions_access_level"] = publicRepositoryActionsAccess()
+	} else if access, ok := details.repositoryActionsAccess[name].(map[string]any); ok && !isUnknown(access) {
 		setObserved(entry, "actions_access_level", access, "access_level")
 	} else {
 		entry["actions_access_level"] = unknownValue()
@@ -1833,6 +1843,13 @@ func projectObservedRepository(
 	entry["team_grants"] = projectObservedTeamGrants(details.repositoryTeams[name])
 	entry["direct_collaborators"] = projectObservedCollaborators(details.directCollaborators[name])
 	return entry
+}
+
+func publicRepositoryActionsAccess() map[string]any {
+	return map[string]any{
+		"applicability": "not_applicable",
+		"visibility":    "public",
+	}
 }
 
 func projectObservedRepositoryProperties(value any) any {

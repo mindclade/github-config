@@ -38,8 +38,9 @@ output "deployment_preflight" {
       managed = true
       desired = {
         for key, repository in var.repositories : key => repository.actions_access_level
+        if repository.visibility != "public"
       }
-      reason = "provider 6.13.0 manages each repository's reusable workflow and action sharing boundary"
+      reason = "provider 6.13.0 manages the reusable workflow and action sharing boundary only where GitHub exposes the non-public repository control"
     }
     oidc_repository_templates = {
       managed = true

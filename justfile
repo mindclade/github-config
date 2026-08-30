@@ -16,6 +16,15 @@ python-test:
     temporary="$(mktemp -d)"; trap 'rm -rf "$temporary"' EXIT; cd compiler; go build -o "$temporary/github-configctl" ./cmd/github-configctl; cd ..; for test_file in tests/contract/test_*.py tests/plan/test_*.py tests/drift/test_*.py tests/recovery/test_*.py; do GITHUB_CONFIGCTL="$temporary/github-configctl" python3 "$test_file"; done
 
 bazel-test:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == Darwin ]]; then
+      # Bazel owns its compiler/action environment. Do not leak Nix's Darwin
+      # linker flags into rules_go's separately declared C toolchain.
+      unset NIX_BINTOOLS NIX_CC NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
+      export CC=/usr/bin/clang
+      export CXX=/usr/bin/clang++
+    fi
     USE_BAZEL_VERSION=9.2.0 bazelisk test //:presubmit --lockfile_mode=off --test_output=errors
 
 policy-test:

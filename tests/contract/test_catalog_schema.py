@@ -70,6 +70,186 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(validation["status"], "valid")
         self.assertRegex(validation["source_digest"], r"^sha256:[0-9a-f]{64}$")
 
+    def test_public_free_estate_and_founder_exception_are_exact(self):
+        result = invoke("compile", "--output", "-")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        catalog = json.loads(result.stdout)
+        organization = catalog["organization"]
+        exception = organization["founder_bootstrap_exception"]
+        self.assertEqual(organization["estate_profile"], "github-free-public")
+        self.assertEqual(exception, {
+            "id": "FBE-0001",
+            "state": "UNUSED",
+            "scope": "founder-bootstrap-only",
+            "workflow_ref": "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+            "allowed_operations": [
+                "foundation-plan", "foundation-apply", "foundation-verification",
+            ],
+            "denied_operations": [
+                "adoption", "enforcement", "production-authority", "exception-replay",
+            ],
+            "single_use_initial_state": "UNUSED",
+            "single_use_terminal_state": "CONSUMED",
+            "receipt_required": True,
+            "receipt_digest_algorithm": "sha256",
+            "principal_id": "founder-primary",
+            "github_actor_accounts": ["mindclade-founder", "robpearc"],
+            "minimum_distinct_actor_accounts": 2,
+            "independent_principals": False,
+            "production_authority": False,
+            "expires_at": "2026-09-30T23:59:59Z",
+        })
+        self.assertEqual(set(catalog["repositories"]), {
+            "bootstrap", "dot-github", "github-config", "gitops",
+            "infrastructure-live", "mindclade",
+        })
+        for repository in catalog["repositories"].values():
+            self.assertEqual(repository["visibility"], "public")
+            expected_access = "organization" if repository["name"] == ".github" else "none"
+            self.assertEqual(repository["actions_access_level"], expected_access)
+            self.assertEqual(repository["custom_properties"]["data_classification"], "public")
+            self.assertEqual(repository["custom_properties"]["production_authority"], "none")
+
+        component = (ROOT / "component.yaml").read_text()
+        self.assertIn("data_classification: public", component)
+        self.assertIn("production_authority: false", component)
+        workflow = (ROOT / ".github" / "workflows" / "protected-apply.yml").read_text()
+        for source_contract in (
+            "FBE-0001", "founder-bootstrap-only", "independent-principals",
+            "independent_principals: false", "production_authority: false",
+            "GHCFG_INDEPENDENT_REVIEWER_ACTOR_IDS", 'state: "UNUSED"',
+            'state: "CONSUMED"', "foundation-verification", "exception-replay",
+            "receipt_digest_algorithm",
+        ):
+            self.assertIn(source_contract, workflow)
+
+    def test_founder_projection_rejects_weak_or_replayable_shapes(self):
+        replacements = (
+            ("state: UNUSED", "state: active"),
+            (
+                "workflow_ref: mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                "workflow_ref: mindclade/github-config/.github/workflows/drift-detection.yml@refs/heads/main",
+            ),
+            ("- foundation-apply", "- enforcement"),
+            ("receipt_required: true", "receipt_required: false"),
+            ("state: UNUSED", "state: CONSUMED"),
+        )
+        for old, new in replacements:
+            with self.subTest(replacement=new):
+                root = self.temporary_catalog()
+                organization = root / "config" / "organization.yaml"
+                organization.write_text(organization.read_text().replace(old, new, 1))
+                result = invoke("validate", root=root)
+                self.assertNotEqual(result.returncode, 0)
+
+        root = self.temporary_catalog()
+        organization = root / "config" / "organization.yaml"
+        organization.write_text(organization.read_text().replace(
+            "    receipt_digest_algorithm: sha256\n",
+            "    receipt_digest_algorithm: sha256\n"
+            f"    consumption_receipt_digest: sha256:{'0' * 64}\n",
+            1,
+        ))
+        result = invoke("validate", root=root)
+        self.assertNotEqual(result.returncode, 0)
+
+        root = self.temporary_catalog()
+        organization = root / "config" / "organization.yaml"
+        consumed = organization.read_text().replace("state: UNUSED", "state: CONSUMED", 1)
+        consumed = consumed.replace(
+            "    receipt_digest_algorithm: sha256\n",
+            "    receipt_digest_algorithm: sha256\n"
+            f"    consumption_receipt_digest: sha256:{'1' * 64}\n",
+            1,
+        )
+        organization.write_text(consumed)
+        result = invoke("validate", root=root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_oidc_lifecycle_accepts_exact_blocked_and_connected_profiles(self):
+        result = invoke("compile", "--output", "-")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        activation = json.loads(result.stdout)["oidc_policy"]["activation"]
+        self.assertEqual(activation["state"], "FOUNDER_BOOTSTRAPPED")
+        self.assertEqual(activation["exception_ref"], "FBE-0001")
+        self.assertEqual(activation["gated_subject_ids"], [])
+        self.assertEqual(activation["blockers"], [
+            "independent-review-not-connected-qualified",
+            "production-authority-disabled",
+        ])
+
+        root = self.temporary_catalog()
+        oidc = root / "config" / "oidc-policy.yaml"
+        prefix = oidc.read_text().split("  activation:\n", 1)[0]
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        source_sha = "a" * 40
+        qualification = {
+            "authority": "bootstrap",
+            "source_sha": source_sha,
+            "workflow_ref": (
+                "mindclade/bootstrap/.github/workflows/protected-apply.yml@" + source_sha
+            ),
+            "independent_principal_ids": ["founder-primary", "security-independent"],
+            "created_at": now.isoformat().replace("+00:00", "Z"),
+            "expires_at": (now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        }
+        qualification_digest = "sha256:" + hashlib.sha256(
+            (json.dumps(qualification, sort_keys=True, indent=2) + "\n").encode()
+        ).hexdigest()
+        active_yaml = "".join(
+            f"      - {subject_id}\n" for subject_id in activation["active_subject_ids"]
+        )
+        connected = f"""  activation:
+    state: CONNECTED_QUALIFIED
+    active_subject_ids:
+{active_yaml}    gated_subject_ids: []
+    blockers: []
+    connected_qualification:
+      authority: bootstrap
+      source_sha: {source_sha}
+      workflow_ref: {qualification['workflow_ref']}
+      independent_principal_ids:
+        - founder-primary
+        - security-independent
+      created_at: {qualification['created_at']}
+      expires_at: {qualification['expires_at']}
+      evidence_digest: {qualification_digest}
+"""
+        oidc.write_text(prefix + connected)
+        connected_result = invoke("validate", root=root)
+        self.assertEqual(connected_result.returncode, 0, connected_result.stderr)
+
+        oidc.write_text((prefix + connected).replace(
+            "    state: CONNECTED_QUALIFIED\n",
+            "    state: CONNECTED_QUALIFIED\n    exception_ref: FBE-0001\n",
+            1,
+        ))
+        leaked = invoke("validate", root=root)
+        self.assertNotEqual(leaked.returncode, 0)
+
+        oidc.write_text((prefix + connected).replace(qualification_digest, "sha256:" + "0" * 64))
+        tampered = invoke("validate", root=root)
+        self.assertNotEqual(tampered.returncode, 0)
+        self.assertIn("evidence_digest does not match", tampered.stderr)
+
+        blocked_active = activation["active_subject_ids"][:11]
+        blocked_gated = activation["active_subject_ids"][11:]
+        blocked = """  activation:
+    state: BLOCKED
+    active_subject_ids:
+{}    gated_subject_ids:
+{}    blockers:
+      - github-config-control-plane-federation-not-connected-qualified
+      - infrastructure-drift-federation-not-connected-qualified
+      - ci-evidence-federation-not-connected-qualified
+""".format(
+            "".join(f"      - {item}\n" for item in blocked_active),
+            "".join(f"      - {item}\n" for item in blocked_gated),
+        )
+        oidc.write_text(prefix + blocked)
+        blocked_result = invoke("validate", root=root)
+        self.assertEqual(blocked_result.returncode, 0, blocked_result.stderr)
+
     def test_oidc_catalog_matches_sibling_bootstrap_federation_or_is_explicitly_blocked(self):
         bootstrap = ROOT.parent / "bootstrap"
         manifest_path = bootstrap / "manifests" / "identity-federation.yaml"
@@ -109,16 +289,79 @@ class CatalogSchemaTest(unittest.TestCase):
             r"^    activeSubjectIds:\n((?:      - [a-z0-9-]+\n)+)", manifest, re.MULTILINE,
         )
         gated_block = re.search(
-            r"^    gatedSubjectIds:\n((?:      - [a-z0-9-]+\n)+)", manifest, re.MULTILINE,
+            r"^    gatedSubjectIds:(?: \[\])?\n((?:      - [a-z0-9-]+\n)*)",
+            manifest,
+            re.MULTILINE,
+        )
+        blockers_block = re.search(
+            r"^    blockers:(?: \[\])?\n((?:      - [a-z0-9-]+\n)*)",
+            manifest,
+            re.MULTILINE,
+        )
+        activation_state = re.search(
+            r"^    state: ([A-Z_]+)$", manifest, re.MULTILINE,
+        )
+        activation_exception = re.search(
+            r"^    exceptionRef: ([A-Z]+-[0-9]+)$", manifest, re.MULTILINE,
         )
         self.assertIsNotNone(active_block)
         self.assertIsNotNone(gated_block)
+        self.assertIsNotNone(blockers_block)
+        self.assertIsNotNone(activation_state)
         bootstrap_active_ids = set(re.findall(r"- ([a-z0-9-]+)", active_block.group(1)))
         bootstrap_gated_ids = set(re.findall(r"- ([a-z0-9-]+)", gated_block.group(1)))
-        self.assertEqual(bootstrap_active_ids, infrastructure_ids | bootstrap_ids)
-        self.assertEqual(bootstrap_gated_ids, gated_ids)
-        self.assertEqual(len(bootstrap_active_ids), 11)
-        self.assertEqual(len(bootstrap_gated_ids), 5)
+        bootstrap_blockers = re.findall(r"- ([a-z0-9-]+)", blockers_block.group(1))
+        if activation_state.group(1) == "FOUNDER_BOOTSTRAPPED":
+            self.assertIsNotNone(activation_exception)
+            self.assertEqual(activation_exception.group(1), "FBE-0001")
+            self.assertEqual(
+                bootstrap_active_ids,
+                infrastructure_ids | bootstrap_ids | {
+                    "github-config-protected-plan",
+                    "github-config-protected-apply",
+                },
+            )
+            self.assertEqual(bootstrap_gated_ids, {
+                "github-config-drift-plan",
+                "infrastructure-drift-plan",
+                "infrastructure-ci-evidence-verifier",
+            })
+            self.assertEqual(bootstrap_blockers, [
+                "independent-review-not-connected-qualified",
+                "production-authority-disabled",
+            ])
+            self.assertEqual(len(bootstrap_active_ids), 13)
+            self.assertEqual(len(bootstrap_gated_ids), 3)
+            expected_github_config_activation = "true"
+            expected_infrastructure_drift_activation = "false"
+            expected_ci_evidence_activation = "false"
+        elif activation_state.group(1) == "CONNECTED_QUALIFIED":
+            self.assertIsNone(activation_exception)
+            self.assertEqual(
+                bootstrap_active_ids,
+                infrastructure_ids | bootstrap_ids | gated_ids,
+            )
+            self.assertEqual(bootstrap_gated_ids, set())
+            self.assertEqual(bootstrap_blockers, [])
+            self.assertEqual(len(bootstrap_active_ids), 16)
+            expected_github_config_activation = "true"
+            expected_infrastructure_drift_activation = "true"
+            expected_ci_evidence_activation = "true"
+        else:
+            self.assertEqual(activation_state.group(1), "BLOCKED")
+            self.assertIsNone(activation_exception)
+            self.assertEqual(bootstrap_active_ids, infrastructure_ids | bootstrap_ids)
+            self.assertEqual(bootstrap_gated_ids, gated_ids)
+            self.assertEqual(bootstrap_blockers, [
+                "github-config-control-plane-federation-not-connected-qualified",
+                "infrastructure-drift-federation-not-connected-qualified",
+                "ci-evidence-federation-not-connected-qualified",
+            ])
+            self.assertEqual(len(bootstrap_active_ids), 11)
+            self.assertEqual(len(bootstrap_gated_ids), 5)
+            expected_github_config_activation = "false"
+            expected_infrastructure_drift_activation = "false"
+            expected_ci_evidence_activation = "false"
         for subject_id in sorted(infrastructure_ids):
             identity = subject_id.removeprefix("infrastructure-live-")
             subject = subjects[subject_id]
@@ -158,7 +401,9 @@ class CatalogSchemaTest(unittest.TestCase):
         github_config_section = manifest.split("    github-config:\n", 1)[1].split(
             "    github-infrastructure:\n", 1,
         )[0]
-        self.assertIn("      activationEnabled: false", github_config_section)
+        self.assertIn(
+            f"      activationEnabled: {expected_github_config_activation}", github_config_section,
+        )
         for identity, subject_ids in (
             ("plan", ("github-config-drift-plan", "github-config-protected-plan")),
             ("apply", ("github-config-protected-apply",)),
@@ -190,7 +435,7 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertRegex(
             infrastructure_section,
             r"(?m)^      drift:\n"
-            r"        activationEnabled: false\n"
+            rf"        activationEnabled: {expected_infrastructure_drift_activation}\n"
             r"        subjectId: infrastructure-drift-plan\n"
             r"        providerId: infrastructure-plan\n"
             r"        serviceAccountId: infrastructure-plan\n"
@@ -203,7 +448,9 @@ class CatalogSchemaTest(unittest.TestCase):
         ci_evidence_section = manifest.split("    github-ci-evidence:\n", 1)[1].split(
             "    buildkite:\n", 1,
         )[0]
-        self.assertIn("      activationEnabled: false", ci_evidence_section)
+        self.assertIn(
+            f"      activationEnabled: {expected_ci_evidence_activation}", ci_evidence_section,
+        )
         verifier = subjects["infrastructure-ci-evidence-verifier"]
         self.assertEqual(verifier["workload_identity_provider_ref"], "verifier")
         self.assertEqual(verifier["service_account_ref"], "ci-evidence-verifier")
@@ -228,16 +475,15 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertIn("      protectionLevel: HSM", signing_section)
         self.assertIn("          env: GITHUB_CONFIG_PLAN_EVIDENCE_SIGNER", signing_section)
 
-        blockers = set(policy["activation"]["blockers"])
-        for subject_id in gated_ids:
-            expected = {
-                "github-config-drift-plan": "github-config-drift-identity-not-connected-qualified",
-                "github-config-protected-plan": "github-config-protected-plan-identity-not-connected-qualified",
-                "github-config-protected-apply": "github-config-protected-apply-identity-not-connected-qualified",
-                "infrastructure-drift-plan": "infrastructure-drift-plan-identity-not-connected-qualified",
-                "infrastructure-ci-evidence-verifier": "ci-evidence-verifier-canonical-audience-handoff-not-connected-qualified",
-            }[subject_id]
-            self.assertIn(expected, blockers)
+        local_activation = policy["activation"]
+        self.assertEqual(local_activation["state"], "FOUNDER_BOOTSTRAPPED")
+        self.assertEqual(local_activation["exception_ref"], "FBE-0001")
+        self.assertEqual(set(local_activation["active_subject_ids"]), set(subjects))
+        self.assertEqual(local_activation["gated_subject_ids"], [])
+        self.assertEqual(local_activation["blockers"], [
+            "independent-review-not-connected-qualified",
+            "production-authority-disabled",
+        ])
 
     def test_dot_github_catalog_and_implementation_revisions_have_template_closure(self):
         policy = (ROOT / "config" / "actions-policy.yaml").read_text()

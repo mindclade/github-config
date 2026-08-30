@@ -318,6 +318,16 @@ func Build(
 		}
 	}
 	summary, writes, highRisk, destructive, replacements, sensitive := summarizePlan(plan, catalogForClassification, observedForClassification, policyInput, phase)
+	createdEpoch, _ := positiveJSONInteger(validatedIdentity["created_epoch"])
+	founderPublicBootstrap := protected && phase == "foundation" && allowsFounderPublicBootstrap(catalogForClassification, createdEpoch)
+	if founderPublicBootstrap {
+		for _, rawChange := range highRisk {
+			change, _ := rawChange.(map[string]any)
+			if onlyFounderPublicFundamental(stringSlice(change["classes"])) {
+				change["write_class"] = "high_risk"
+			}
+		}
+	}
 	destructiveIDs := stringSlice(destructive)
 	dependencyAnalysisVerified := false
 	if dependencyAnalysisPath != "" {
@@ -336,7 +346,7 @@ func Build(
 	for _, rawChange := range highRisk {
 		change, _ := rawChange.(map[string]any)
 		for _, class := range stringSlice(change["classes"]) {
-			if _, denied := fundamentalClasses[class]; denied {
+			if _, denied := fundamentalClasses[class]; denied && !(founderPublicBootstrap && class == "public_visibility") {
 				fundamental = true
 			}
 			if class == "privilege_expansion" {
@@ -390,6 +400,7 @@ func Build(
 		},
 		"decision": map[string]any{
 			"eligible_for_protected_apply": len(blockers) == 0, "risk_acknowledged": riskAcknowledged,
+			"founder_bootstrap":             founderBootstrapEvidenceProjection(founderPublicBootstrap),
 			"requires_risk_acknowledgement": privilegeExpansion, "blockers": blockers,
 			"destructive_change_acknowledged":             destructiveAcknowledged,
 			"requires_destructive_change_acknowledgement": requiresDestructiveReview,
@@ -405,6 +416,108 @@ func Build(
 	}
 	result["evidence_digest"] = rendering.Digest(canonical)
 	return result, nil
+}
+
+func onlyFounderPublicFundamental(classes []string) bool {
+	publicVisibility := false
+	for _, class := range classes {
+		if class == "public_visibility" {
+			publicVisibility = true
+			continue
+		}
+		if _, denied := fundamentalClasses[class]; denied {
+			return false
+		}
+	}
+	return publicVisibility
+}
+
+func founderBootstrapEvidenceProjection(applicable bool) map[string]any {
+	if !applicable {
+		return map[string]any{"applicable": false}
+	}
+	return map[string]any{
+		"applicable":                true,
+		"exception_id":              "FBE-0001",
+		"scope":                     "founder-bootstrap-only",
+		"workflow_ref":              "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+		"allowed_operations":        []any{"foundation-plan", "foundation-apply", "foundation-verification"},
+		"denied_operations":         []any{"adoption", "enforcement", "production-authority", "exception-replay"},
+		"authorized_operation":      "foundation-apply",
+		"single_use_initial_state":  "UNUSED",
+		"single_use_terminal_state": "CONSUMED",
+		"receipt_required":          true,
+		"receipt_digest_algorithm":  "sha256",
+		"independent_principals":    false,
+		"production_authority":      false,
+	}
+}
+
+func allowsFounderPublicBootstrap(catalog map[string]any, createdEpoch int64) bool {
+	const exceptionExpiryEpoch int64 = 1790812799
+	if createdEpoch <= 0 || createdEpoch > exceptionExpiryEpoch {
+		return false
+	}
+	organization, _ := catalog["organization"].(map[string]any)
+	exception, _ := organization["founder_bootstrap_exception"].(map[string]any)
+	independent, independentKnown := exception["independent_principals"].(bool)
+	production, productionKnown := exception["production_authority"].(bool)
+	minimumAccounts, minimumKnown := positiveJSONInteger(exception["minimum_distinct_actor_accounts"])
+	accounts := stringSlice(exception["github_actor_accounts"])
+	if fmt.Sprint(organization["estate_profile"]) != "github-free-public" ||
+		fmt.Sprint(exception["id"]) != "FBE-0001" || fmt.Sprint(exception["state"]) != "UNUSED" ||
+		fmt.Sprint(exception["scope"]) != "founder-bootstrap-only" ||
+		fmt.Sprint(exception["workflow_ref"]) != "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main" ||
+		!sameExactStrings(stringSlice(exception["allowed_operations"]), []string{"foundation-plan", "foundation-apply", "foundation-verification"}) ||
+		!sameExactStrings(stringSlice(exception["denied_operations"]), []string{"adoption", "enforcement", "production-authority", "exception-replay"}) ||
+		fmt.Sprint(exception["single_use_initial_state"]) != "UNUSED" || fmt.Sprint(exception["single_use_terminal_state"]) != "CONSUMED" ||
+		exception["receipt_required"] != true || fmt.Sprint(exception["receipt_digest_algorithm"]) != "sha256" ||
+		fmt.Sprint(exception["principal_id"]) != "founder-primary" ||
+		fmt.Sprint(exception["expires_at"]) != "2026-09-30T23:59:59Z" ||
+		!independentKnown || independent || !productionKnown || production ||
+		!minimumKnown || minimumAccounts != 2 || len(accounts) != 2 ||
+		accounts[0] != "mindclade-founder" || accounts[1] != "robpearc" {
+		return false
+	}
+	expectedRepositories := map[string]struct{}{
+		"bootstrap": {}, "dot-github": {}, "github-config": {},
+		"gitops": {}, "infrastructure-live": {}, "mindclade": {},
+	}
+	repositories, _ := catalog["repositories"].(map[string]any)
+	if len(repositories) != len(expectedRepositories) {
+		return false
+	}
+	for id := range expectedRepositories {
+		repository, exists := repositories[id].(map[string]any)
+		properties, _ := repository["custom_properties"].(map[string]any)
+		if !exists || fmt.Sprint(repository["visibility"]) != "public" || fmt.Sprint(properties["data_classification"]) != "public" ||
+			fmt.Sprint(properties["production_authority"]) != "none" {
+			return false
+		}
+	}
+	desiredAccounts := map[string]bool{"mindclade-founder": false, "robpearc": false}
+	members, _ := catalog["members"].([]any)
+	for _, rawMember := range members {
+		member, _ := rawMember.(map[string]any)
+		login := strings.ToLower(fmt.Sprint(member["login"]))
+		if _, expected := desiredAccounts[login]; expected && fmt.Sprint(member["role"]) == "admin" &&
+			fmt.Sprint(member["principal_id"]) == "founder-primary" {
+			desiredAccounts[login] = true
+		}
+	}
+	return desiredAccounts["mindclade-founder"] && desiredAccounts["robpearc"]
+}
+
+func sameExactStrings(actual, expected []string) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for index := range actual {
+		if actual[index] != expected[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func planDigestProjection(plan map[string]any) map[string]any {
@@ -653,6 +766,45 @@ func validateProtectedEvidenceDocument(document map[string]any) error {
 	}
 	if _, ok := decision["eligible_for_protected_apply"].(bool); !ok {
 		return errors.New("protected evidence has a malformed eligibility decision")
+	}
+	if err := validateFounderBootstrapEvidenceProjection(document, decision); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateFounderBootstrapEvidenceProjection(document, decision map[string]any) error {
+	projection, ok := decision["founder_bootstrap"].(map[string]any)
+	if !ok {
+		return errors.New("evidence omits the founder-bootstrap projection")
+	}
+	applicable, applicableKnown := projection["applicable"].(bool)
+	if !applicableKnown {
+		return errors.New("evidence has a malformed founder-bootstrap applicability decision")
+	}
+	if !applicable {
+		if len(projection) != 1 {
+			return errors.New("non-applicable founder-bootstrap evidence leaks exception authority")
+		}
+		return nil
+	}
+	bindings, _ := document["bindings"].(map[string]any)
+	independent, independentKnown := projection["independent_principals"].(bool)
+	production, productionKnown := projection["production_authority"].(bool)
+	receiptRequired, receiptKnown := projection["receipt_required"].(bool)
+	if fmt.Sprint(document["phase"]) != "foundation" ||
+		fmt.Sprint(bindings["workflow_ref"]) != "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main" ||
+		fmt.Sprint(projection["exception_id"]) != "FBE-0001" ||
+		fmt.Sprint(projection["scope"]) != "founder-bootstrap-only" ||
+		fmt.Sprint(projection["workflow_ref"]) != "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main" ||
+		!sameExactStrings(stringSlice(projection["allowed_operations"]), []string{"foundation-plan", "foundation-apply", "foundation-verification"}) ||
+		!sameExactStrings(stringSlice(projection["denied_operations"]), []string{"adoption", "enforcement", "production-authority", "exception-replay"}) ||
+		fmt.Sprint(projection["authorized_operation"]) != "foundation-apply" ||
+		fmt.Sprint(projection["single_use_initial_state"]) != "UNUSED" ||
+		fmt.Sprint(projection["single_use_terminal_state"]) != "CONSUMED" ||
+		!receiptKnown || !receiptRequired || fmt.Sprint(projection["receipt_digest_algorithm"]) != "sha256" ||
+		!independentKnown || independent || !productionKnown || production {
+		return errors.New("evidence has a weak, replayable, or authority-leaking founder-bootstrap projection")
 	}
 	return nil
 }

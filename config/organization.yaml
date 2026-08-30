@@ -4,6 +4,33 @@ metadata:
   id: mindclade-organization
   owner_team: security
 spec:
+  estate_profile: github-free-public
+  founder_bootstrap_exception:
+    id: FBE-0001
+    state: UNUSED
+    scope: founder-bootstrap-only
+    workflow_ref: mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main
+    allowed_operations:
+      - foundation-plan
+      - foundation-apply
+      - foundation-verification
+    denied_operations:
+      - adoption
+      - enforcement
+      - production-authority
+      - exception-replay
+    single_use_initial_state: UNUSED
+    single_use_terminal_state: CONSUMED
+    receipt_required: true
+    receipt_digest_algorithm: sha256
+    principal_id: founder-primary
+    github_actor_accounts:
+      - mindclade-founder
+      - robpearc
+    minimum_distinct_actor_accounts: 2
+    independent_principals: false
+    production_authority: false
+    expires_at: "2026-09-30T23:59:59Z"
   organization_login: mindclade
   default_repository_permission: none
   members_can_create_repositories: false

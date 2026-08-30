@@ -16,7 +16,7 @@ spec:
   repository_class: governance-source
   trust_tier: privileged-governance
   recovery_tier: tier-0
-  data_classification: restricted
+  data_classification: public
   production_authority: false
   dependencies:
     - component:dot-github
@@ -24,6 +24,7 @@ spec:
   provides:
     - github-governance-catalog-v1
     - github-governance-plan-evidence-v1
+    - github-founder-bootstrap-authorization-v1
   release:
     strategy: reviewed-main
     artifact: source-commit
@@ -32,4 +33,4 @@ spec:
     source_ready:
       description: Catalog, compiler, policy, tests, and recovery source are qualified without implying live GitHub enforcement.
     connected:
-      description: Nonqualifying until bootstrap connects and independently qualifies every source-declared identity and the plan-evidence signer, and Blueprint A3.9/A3.10 ratifies a reusable governance workflow interface or explicit control-plane exception; production authority then requires an independently approved apply and fresh verification at this exact revision.
+      description: Nonqualifying until bootstrap connects and independently qualifies every source-declared identity and the plan-evidence signer. The exact, unexpired FBE-0001 path is founder-bootstrap-only, never establishes independent principals, and keeps production_authority false; production authority still requires an independently approved apply and fresh verification at this exact revision.

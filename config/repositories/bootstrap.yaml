@@ -6,7 +6,7 @@ metadata:
 spec:
   name: bootstrap
   description: Root trust, state, federation, signing, and recovery foundations.
-  visibility: private
+  visibility: public
   actions_access_level: none
   archived: false
   archive_on_destroy: true
@@ -35,11 +35,11 @@ spec:
     repository_class: infrastructure-source
     owner_team: security
     criticality: critical
-    data_classification: restricted
+    data_classification: public
     lifecycle: active
     ci_profile: github-actions
     language_profile: opentofu
-    production_authority: root-trust
+    production_authority: none
   team_grants:
     - team: security
       permission: maintain

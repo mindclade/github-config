@@ -6,7 +6,7 @@ metadata:
 spec:
   name: github-config
   description: Declarative GitHub organization governance control plane.
-  visibility: private
+  visibility: public
   actions_access_level: none
   archived: false
   archive_on_destroy: true
@@ -35,11 +35,11 @@ spec:
     repository_class: governance-source
     owner_team: developer-platform
     criticality: critical
-    data_classification: restricted
+    data_classification: public
     lifecycle: active
     ci_profile: github-actions
     language_profile: go-opentofu
-    production_authority: github-governance
+    production_authority: none
   team_grants:
     - team: security
       permission: maintain

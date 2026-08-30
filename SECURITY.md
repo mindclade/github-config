@@ -44,7 +44,12 @@ partial mutation but never authorizes an apply or retry.
   fresh, independently authenticated bootstrap bundle that the runtime verifies
   against the exact WIF provider, service account, backend, and App installation.
 - A plan or observation is not authorization to apply.
-- Two GitHub accounts for the same human are one principal for quorum.
+- Two GitHub accounts for the same human are one principal for normal quorum.
+  The exact, unexpired `FBE-0001` exception may bind the two declared accounts
+  to one single-use foundation-bootstrap receipt, but the receipt explicitly
+  records `independent_principals: false` and `production_authority: false`.
+  Only the exact `UNUSED` projection is authorizable; consumption transitions
+  it to `CONSUMED` and binds a required `sha256` receipt digest.
 - Repository deletion, replacement, visibility expansion, protection
   weakening, OIDC deletion/replacement or non-catalog mutation, and last-admin
   removal are denied. Catalog-exact OIDC create/update remains high risk and
