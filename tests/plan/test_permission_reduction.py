@@ -39,8 +39,11 @@ class PermissionReductionTest(unittest.TestCase):
             for grant in repository["team_grants"]:
                 self.assertIn(grant["permission"], rank, name)
                 self.assertLessEqual(rank[grant["permission"]], rank["maintain"], name)
+            self.assertEqual(repository["visibility"], "public", name)
             expected_access = "organization" if repository["name"] == ".github" else "none"
             self.assertEqual(repository["actions_access_level"], expected_access, name)
+            self.assertEqual(repository["custom_properties"]["data_classification"], "public", name)
+            self.assertEqual(repository["custom_properties"]["production_authority"], "none", name)
         dot_github = catalog["repositories"]["dot-github"]
         grants = {grant["team"]: grant["permission"] for grant in dot_github["team_grants"]}
         self.assertEqual(grants["developer-platform"], "maintain")
@@ -186,6 +189,31 @@ class PermissionReductionTest(unittest.TestCase):
             foundation_codes = {item["code"] for item in foundation_report["blockers"]}
             self.assertIn("DESIRED_ACTIVATION_BLOCKED", foundation_codes)
             self.assertIn("INSTALLATION_INVENTORY_UNQUALIFIED", foundation_codes)
+            self.assertNotIn("INSUFFICIENT_DISTINCT_HUMANS", foundation_codes)
+            self.assertNotIn("REVIEWER_QUORUM_UNSATISFIED", foundation_codes)
+            self.assertEqual(foundation_report["founder_bootstrap"], {
+                "exception_id": "FBE-0001",
+                "scope": "founder-bootstrap-only",
+                "workflow_ref": "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                "allowed_operations": [
+                    "foundation-plan", "foundation-apply", "foundation-verification",
+                ],
+                "denied_operations": [
+                    "adoption", "enforcement", "production-authority", "exception-replay",
+                ],
+                "authorized_operation": "foundation-apply",
+                "single_use_initial_state": "UNUSED",
+                "single_use_terminal_state": "CONSUMED",
+                "receipt_required": True,
+                "receipt_digest_algorithm": "sha256",
+                "principal_id": "founder-primary",
+                "github_actor_accounts": ["mindclade-founder", "robpearc"],
+                "independent_principals": False,
+                "production_authority": False,
+                "eligible": True,
+                "status": "eligible",
+                "expires_at": "2026-09-30T23:59:59Z",
+            })
 
             blocked_ids = {
                 key for key, activation in catalog["activation"].items()
@@ -196,6 +224,13 @@ class PermissionReductionTest(unittest.TestCase):
                 if item["code"] == "DESIRED_ACTIVATION_BLOCKED"
             ]
             for blocked_id in blocked_ids:
+                blockers = set(catalog["activation"][blocked_id]["blockers"])
+                if blockers and blockers <= {
+                    "independent-administrator-required",
+                    "independent-reviewer-required",
+                    "independent-security-reviewer-required",
+                }:
+                    continue
                 self.assertTrue(
                     any(f"/activation/{blocked_id}:" in message for message in activation_messages),
                     blocked_id,
@@ -410,7 +445,7 @@ class PermissionReductionTest(unittest.TestCase):
             self.assertEqual(report["adopted_repository_oidc_templates"], {"github-config": "github-config"})
             self.assertEqual(
                 report["adopted_repository_actions_access_levels"],
-                {"github-config": "github-config"},
+                {},
             )
             self.assertEqual(report["adopted_memberships"][members[0]["login"]], f"mindclade:{members[0]['login']}")
             self.assertEqual(

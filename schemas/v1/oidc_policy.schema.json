@@ -24,10 +24,72 @@
     "activation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["state", "blockers"],
+      "required": ["state", "active_subject_ids", "gated_subject_ids", "blockers"],
       "properties": {
-        "state": {"enum": ["ready", "blocked"]},
-        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}}
+        "state": {"enum": ["BLOCKED", "FOUNDER_BOOTSTRAPPED", "CONNECTED_QUALIFIED"]},
+        "exception_ref": {"const": "FBE-0001"},
+        "active_subject_ids": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}
+        },
+        "gated_subject_ids": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}
+        },
+        "blockers": {
+          "type": "array", "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}
+        },
+        "connected_qualification": {"$ref": "#/$defs/connectedQualification"}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "state": {"const": "BLOCKED"},
+            "active_subject_ids": {"const": ["bootstrap-protected-plan", "bootstrap-protected-apply", "bootstrap-recovery-verification", "infrastructure-live-development-plan", "infrastructure-live-development-apply", "infrastructure-live-staging-plan", "infrastructure-live-staging-apply", "infrastructure-live-production-plan", "infrastructure-live-production-apply", "infrastructure-live-restricted-plan", "infrastructure-live-restricted-apply"]},
+            "gated_subject_ids": {"const": ["github-config-drift-plan", "github-config-protected-plan", "github-config-protected-apply", "infrastructure-drift-plan", "infrastructure-ci-evidence-verifier"]},
+            "blockers": {"const": ["github-config-control-plane-federation-not-connected-qualified", "infrastructure-drift-federation-not-connected-qualified", "ci-evidence-federation-not-connected-qualified"]}
+          },
+          "not": {"anyOf": [{"required": ["exception_ref"]}, {"required": ["connected_qualification"]}]}
+        },
+        {
+          "required": ["exception_ref"],
+          "properties": {
+            "state": {"const": "FOUNDER_BOOTSTRAPPED"},
+            "exception_ref": {"const": "FBE-0001"},
+            "active_subject_ids": {"const": ["bootstrap-protected-plan", "bootstrap-protected-apply", "bootstrap-recovery-verification", "infrastructure-live-development-plan", "infrastructure-live-development-apply", "infrastructure-live-staging-plan", "infrastructure-live-staging-apply", "infrastructure-live-production-plan", "infrastructure-live-production-apply", "infrastructure-live-restricted-plan", "infrastructure-live-restricted-apply", "github-config-drift-plan", "github-config-protected-plan", "github-config-protected-apply", "infrastructure-drift-plan", "infrastructure-ci-evidence-verifier"]},
+            "gated_subject_ids": {"const": []},
+            "blockers": {"const": ["independent-review-not-connected-qualified", "production-authority-disabled"]}
+          },
+          "not": {"required": ["connected_qualification"]}
+        },
+        {
+          "required": ["connected_qualification"],
+          "properties": {
+            "state": {"const": "CONNECTED_QUALIFIED"},
+            "active_subject_ids": {"const": ["bootstrap-protected-plan", "bootstrap-protected-apply", "bootstrap-recovery-verification", "infrastructure-live-development-plan", "infrastructure-live-development-apply", "infrastructure-live-staging-plan", "infrastructure-live-staging-apply", "infrastructure-live-production-plan", "infrastructure-live-production-apply", "infrastructure-live-restricted-plan", "infrastructure-live-restricted-apply", "github-config-drift-plan", "github-config-protected-plan", "github-config-protected-apply", "infrastructure-drift-plan", "infrastructure-ci-evidence-verifier"]},
+            "gated_subject_ids": {"const": []},
+            "blockers": {"const": []}
+          },
+          "not": {"required": ["exception_ref"]}
+        }
+      ]
+    },
+    "connectedQualification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "source_sha", "workflow_ref", "independent_principal_ids", "created_at", "expires_at", "evidence_digest"],
+      "properties": {
+        "authority": {"const": "bootstrap"},
+        "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "workflow_ref": {"type": "string", "pattern": "^mindclade/bootstrap/\\.github/workflows/protected-apply\\.yml@[0-9a-f]{40}$"},
+        "independent_principal_ids": {
+          "type": "array", "minItems": 2, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+        },
+        "created_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+        "expires_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+        "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
       }
     },
     "context": {

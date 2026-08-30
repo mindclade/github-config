@@ -120,10 +120,73 @@
         }
       ]
     },
+    "founderBootstrapException": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "state",
+        "scope",
+        "workflow_ref",
+        "allowed_operations",
+        "denied_operations",
+        "single_use_initial_state",
+        "single_use_terminal_state",
+        "receipt_required",
+        "receipt_digest_algorithm",
+        "principal_id",
+        "github_actor_accounts",
+        "minimum_distinct_actor_accounts",
+        "independent_principals",
+        "production_authority",
+        "expires_at"
+      ],
+      "properties": {
+        "id": {"const": "FBE-0001"},
+        "state": {"enum": ["UNUSED", "CONSUMED"]},
+        "scope": {"const": "founder-bootstrap-only"},
+        "workflow_ref": {"const": "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main"},
+        "allowed_operations": {"const": ["foundation-plan", "foundation-apply", "foundation-verification"]},
+        "denied_operations": {"const": ["adoption", "enforcement", "production-authority", "exception-replay"]},
+        "single_use_initial_state": {"const": "UNUSED"},
+        "single_use_terminal_state": {"const": "CONSUMED"},
+        "receipt_required": {"const": true},
+        "receipt_digest_algorithm": {"const": "sha256"},
+        "consumption_receipt_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "principal_id": {"const": "founder-primary"},
+        "github_actor_accounts": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "prefixItems": [
+            {"const": "mindclade-founder"},
+            {"const": "robpearc"}
+          ],
+          "items": false
+        },
+        "minimum_distinct_actor_accounts": {"const": 2},
+        "independent_principals": {"const": false},
+        "production_authority": {"const": false},
+        "expires_at": {"const": "2026-09-30T23:59:59Z"}
+      },
+      "oneOf": [
+        {
+          "properties": {"state": {"const": "UNUSED"}},
+          "not": {"required": ["consumption_receipt_digest"]}
+        },
+        {
+          "required": ["consumption_receipt_digest"],
+          "properties": {"state": {"const": "CONSUMED"}}
+        }
+      ]
+    },
     "spec": {
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "estate_profile",
+        "founder_bootstrap_exception",
         "organization_login",
         "default_repository_permission",
         "members_can_create_repositories",
@@ -139,6 +202,8 @@
         "custom_property_migration"
       ],
       "properties": {
+        "estate_profile": {"const": "github-free-public"},
+        "founder_bootstrap_exception": {"$ref": "#/$defs/founderBootstrapException"},
         "organization_login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
         "default_repository_permission": {"enum": ["none", "read", "write", "admin"]},
         "members_can_create_repositories": {"type": "boolean"},

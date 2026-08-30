@@ -105,7 +105,10 @@ resource "github_repository_dependabot_security_updates" "this" {
 }
 
 resource "github_actions_repository_access_level" "this" {
-  for_each = local.repositories
+  for_each = {
+    for key, repository in local.repositories : key => repository
+    if repository.visibility != "public"
+  }
 
   repository   = github_repository.this[each.key].name
   access_level = each.value.actions_access_level

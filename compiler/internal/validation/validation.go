@@ -647,30 +647,135 @@ func validateCanonicalOIDCIdentities(path string, policy map[string]any) error {
 	if len(missing) != 0 {
 		return fmt.Errorf("%s: missing exact canonical OIDC identities: %s", path, strings.Join(missing, ", "))
 	}
-	// Bootstrap source declares every identity below, but the connected
-	// qualification contract keeps each provider/account pair activation
-	// disabled. Keep every gap explicit so a source declaration cannot become
-	// an accidental promise of exchange authority.
 	activation := specObject(policy, "activation")
-	if stringValue(activation["state"]) != "blocked" {
-		return fmt.Errorf("%s: OIDC activation must remain blocked while canonical bootstrap identities are not connected-qualified", path)
+	blockedActive := []string{
+		"bootstrap-protected-plan", "bootstrap-protected-apply", "bootstrap-recovery-verification",
+		"infrastructure-live-development-plan", "infrastructure-live-development-apply",
+		"infrastructure-live-staging-plan", "infrastructure-live-staging-apply",
+		"infrastructure-live-production-plan", "infrastructure-live-production-apply",
+		"infrastructure-live-restricted-plan", "infrastructure-live-restricted-apply",
 	}
-	blockers := make(set)
-	for _, blocker := range stringList(activation["blockers"]) {
-		blockers.add(blocker)
+	blockedGated := []string{
+		"github-config-drift-plan", "github-config-protected-plan", "github-config-protected-apply",
+		"infrastructure-drift-plan", "infrastructure-ci-evidence-verifier",
 	}
-	for _, required := range []string{
-		"github-config-drift-identity-not-connected-qualified",
-		"github-config-protected-plan-identity-not-connected-qualified",
-		"github-config-protected-apply-identity-not-connected-qualified",
-		"infrastructure-drift-plan-identity-not-connected-qualified",
-		"ci-evidence-verifier-canonical-audience-handoff-not-connected-qualified",
-	} {
-		if !blockers.has(required) {
-			return fmt.Errorf("%s: unavailable canonical OIDC identity requires activation blocker %q", path, required)
+	allSubjects := append(append([]string{}, blockedActive...), blockedGated...)
+	state := stringValue(activation["state"])
+	activeSubjects := stringList(activation["active_subject_ids"])
+	gatedSubjects := stringList(activation["gated_subject_ids"])
+	blockers := stringList(activation["blockers"])
+	switch state {
+	case "BLOCKED":
+		if _, present := activation["exception_ref"]; present {
+			return fmt.Errorf("%s: BLOCKED OIDC activation must not carry founder authority", path)
 		}
+		if _, present := activation["connected_qualification"]; present {
+			return fmt.Errorf("%s: BLOCKED OIDC activation must not carry connected qualification", path)
+		}
+		if !sameOrderedStrings(activeSubjects, blockedActive) || !sameOrderedStrings(gatedSubjects, blockedGated) ||
+			!sameOrderedStrings(blockers, []string{
+				"github-config-control-plane-federation-not-connected-qualified",
+				"infrastructure-drift-federation-not-connected-qualified",
+				"ci-evidence-federation-not-connected-qualified",
+			}) {
+			return fmt.Errorf("%s: BLOCKED OIDC activation does not match the exact bootstrap subject partition and blockers", path)
+		}
+	case "FOUNDER_BOOTSTRAPPED":
+		if stringValue(activation["exception_ref"]) != "FBE-0001" {
+			return fmt.Errorf("%s: founder-bootstrap OIDC activation requires exact FBE-0001 authority", path)
+		}
+		if _, present := activation["connected_qualification"]; present {
+			return fmt.Errorf("%s: founder-bootstrap OIDC activation must not claim connected qualification", path)
+		}
+		if !sameOrderedStrings(activeSubjects, allSubjects) || len(gatedSubjects) != 0 ||
+			!sameOrderedStrings(blockers, []string{"independent-review-not-connected-qualified", "production-authority-disabled"}) {
+			return fmt.Errorf("%s: FOUNDER_BOOTSTRAPPED OIDC activation must enable all three graphs while preserving the exact independence and production-authority blockers", path)
+		}
+	case "CONNECTED_QUALIFIED":
+		if _, present := activation["exception_ref"]; present {
+			return fmt.Errorf("%s: CONNECTED_QUALIFIED OIDC activation must not retain founder authority", path)
+		}
+		if !sameOrderedStrings(activeSubjects, allSubjects) || len(gatedSubjects) != 0 || len(blockers) != 0 {
+			return fmt.Errorf("%s: CONNECTED_QUALIFIED OIDC activation must enable all three graphs without gated subjects or blockers", path)
+		}
+		if err := validateOIDCConnectedQualification(activation, time.Now().UTC()); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+	default:
+		return fmt.Errorf("%s: OIDC activation state must be BLOCKED, FOUNDER_BOOTSTRAPPED, or CONNECTED_QUALIFIED", path)
 	}
 	return nil
+}
+
+func sameOrderedStrings(actual, expected []string) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	for index := range actual {
+		if actual[index] != expected[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateOIDCConnectedQualification(activation map[string]any, now time.Time) error {
+	qualification := specObject(activation, "connected_qualification")
+	if stringValue(qualification["authority"]) != "bootstrap" {
+		return errors.New("CONNECTED_QUALIFIED OIDC activation requires bootstrap authority")
+	}
+	sourceSHA := stringValue(qualification["source_sha"])
+	if !integrationSourceSHAPattern.MatchString(sourceSHA) ||
+		stringValue(qualification["workflow_ref"]) != "mindclade/bootstrap/.github/workflows/protected-apply.yml@"+sourceSHA {
+		return errors.New("connected OIDC evidence must bind the exact bootstrap protected-apply source SHA")
+	}
+	principals := stringList(qualification["independent_principal_ids"])
+	if len(principals) < 2 {
+		return errors.New("connected OIDC evidence requires at least two independent principal IDs")
+	}
+	sortedPrincipals := append([]string(nil), principals...)
+	sort.Strings(sortedPrincipals)
+	if !sameOrderedStrings(principals, sortedPrincipals) {
+		return errors.New("connected OIDC evidence principal IDs must be canonical and sorted")
+	}
+	seenPrincipals := make(set)
+	for _, principal := range principals {
+		if principal == "" || seenPrincipals.has(principal) {
+			return errors.New("connected OIDC evidence principal IDs must be non-empty and distinct")
+		}
+		seenPrincipals.add(principal)
+	}
+	createdText := stringValue(qualification["created_at"])
+	expiresText := stringValue(qualification["expires_at"])
+	createdAt, createdErr := time.Parse(time.RFC3339, createdText)
+	expiresAt, expiresErr := time.Parse(time.RFC3339, expiresText)
+	if createdErr != nil || expiresErr != nil || !strings.HasSuffix(createdText, "Z") || !strings.HasSuffix(expiresText, "Z") {
+		return errors.New("connected OIDC evidence timestamps must be RFC3339 UTC values ending in Z")
+	}
+	if !expiresAt.After(createdAt) || expiresAt.Sub(createdAt) > maximumIntegrationAttestationTTL || !expiresAt.After(now) {
+		return errors.New("connected OIDC evidence must be unexpired with a validity window no longer than seven days")
+	}
+	canonical, err := canonicalOIDCConnectedQualification(qualification)
+	if err != nil {
+		return fmt.Errorf("canonicalize connected OIDC evidence: %w", err)
+	}
+	if digest := stringValue(qualification["evidence_digest"]); !validSHA256Digest(digest) || digest != rendering.Digest(canonical) {
+		return errors.New("connected OIDC evidence_digest does not match its canonical content")
+	}
+	return nil
+}
+
+func canonicalOIDCConnectedQualification(qualification map[string]any) ([]byte, error) {
+	normalized := make(map[string]any, len(qualification)-1)
+	for key, value := range qualification {
+		if key != "evidence_digest" {
+			normalized[key] = value
+		}
+	}
+	principals := append([]string(nil), stringList(qualification["independent_principal_ids"])...)
+	sort.Strings(principals)
+	normalized["independent_principal_ids"] = stringsToAny(principals)
+	return rendering.CanonicalJSON(normalized)
 }
 
 func validateInfrastructureApplyHandoff(path string, spec, activation map[string]any) error {
@@ -845,6 +950,8 @@ func environmentAuthorityKey(repository, workflow, environment string) string {
 // App-inventory safety gates used by enforcement are satisfied. Enforce also
 // requires the complete desired managed state to be converged.
 func PreflightReport(desired, observed map[string]any, phase string) map[string]any {
+	founderBootstrap := founderBootstrapQualification(desired, observed, phase, time.Now().UTC())
+	founderBootstrapEligible := boolValue(founderBootstrap["eligible"])
 	blockers := make([]map[string]any, 0)
 	seenBlockers := make(map[string]struct{})
 	add := func(code, message string) {
@@ -935,7 +1042,7 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 		if configured := integerValue(memberActivation["minimum_distinct_admin_principals"]); configured > 0 {
 			minimumAdmins = configured
 		}
-		if int64(len(principals)) < minimumAdmins {
+		if int64(len(principals)) < minimumAdmins && !founderBootstrapEligible {
 			add("INSUFFICIENT_DISTINCT_HUMANS", fmt.Sprintf("at least %d distinct active organization-admin principals are required", minimumAdmins))
 		}
 		teams, _ := desired["teams"].(map[string]any)
@@ -959,7 +1066,7 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 					available.add(principal)
 				}
 			}
-			if int64(len(available)) < minimum {
+			if int64(len(available)) < minimum && !founderBootstrapEligible {
 				add("REVIEWER_QUORUM_UNSATISFIED", fmt.Sprintf("environment %q requires %d distinct principals but reviewer teams provide %d", id, minimum, len(available)))
 			}
 		}
@@ -1017,7 +1124,19 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 		if activation == nil {
 			activation = desired
 		}
-		collectActivationBlockers(activation, "/activation", add)
+		activationAdd := add
+		if founderBootstrapEligible {
+			activationAdd = func(code, message string) {
+				if code == "DESIRED_ACTIVATION_BLOCKED" &&
+					(strings.HasSuffix(message, ": independent-administrator-required") ||
+						strings.HasSuffix(message, ": independent-reviewer-required") ||
+						strings.HasSuffix(message, ": independent-security-reviewer-required")) {
+					return
+				}
+				add(code, message)
+			}
+		}
+		collectActivationBlockers(activation, "/activation", activationAdd)
 		integrations, _ := desired["integrations"].(map[string]any)
 		observedIntegrations, _ := observed["integrations"].(map[string]any)
 		for id, desiredValue := range integrations {
@@ -1043,12 +1162,13 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 		status = "ready"
 	}
 	result := map[string]any{
-		"api_version": APIVersion,
-		"kind":        "ActivationPreflight",
-		"phase":       phase,
-		"status":      status,
-		"eligible":    eligible,
-		"blockers":    blockers,
+		"api_version":       APIVersion,
+		"kind":              "ActivationPreflight",
+		"phase":             phase,
+		"status":            status,
+		"eligible":          eligible,
+		"blockers":          blockers,
+		"founder_bootstrap": founderBootstrap,
 	}
 	for key, value := range adoptionMaps {
 		result[key] = value
@@ -1058,6 +1178,82 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 		result["qualified_integration_actor_ids"] = qualifiedIntegrationActors
 		result["qualified_status_check_integration_ids"] = qualifiedStatusCheckActors
 	}
+	return result
+}
+
+func founderBootstrapQualification(desired, observed map[string]any, phase string, now time.Time) map[string]any {
+	result := map[string]any{
+		"exception_id":              "FBE-0001",
+		"scope":                     "founder-bootstrap-only",
+		"workflow_ref":              "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+		"allowed_operations":        []any{"foundation-plan", "foundation-apply", "foundation-verification"},
+		"denied_operations":         []any{"adoption", "enforcement", "production-authority", "exception-replay"},
+		"authorized_operation":      "foundation-apply",
+		"single_use_initial_state":  "UNUSED",
+		"single_use_terminal_state": "CONSUMED",
+		"receipt_required":          true,
+		"receipt_digest_algorithm":  "sha256",
+		"principal_id":              "founder-primary",
+		"github_actor_accounts":     []any{"mindclade-founder", "robpearc"},
+		"independent_principals":    false,
+		"production_authority":      false,
+		"eligible":                  false,
+		"status":                    "not-applicable",
+	}
+	if phase != "foundation" {
+		return result
+	}
+	result["status"] = "ineligible"
+	organization, _ := desired["organization"].(map[string]any)
+	exception := specObject(organization, "founder_bootstrap_exception")
+	expiresAt := stringValue(exception["expires_at"])
+	result["expires_at"] = expiresAt
+	expires, err := time.Parse(time.RFC3339, expiresAt)
+	allowedOperations := stringList(exception["allowed_operations"])
+	deniedOperations := stringList(exception["denied_operations"])
+	if stringValue(organization["estate_profile"]) != "github-free-public" ||
+		stringValue(exception["id"]) != "FBE-0001" ||
+		stringValue(exception["state"]) != "UNUSED" ||
+		stringValue(exception["scope"]) != "founder-bootstrap-only" ||
+		stringValue(exception["workflow_ref"]) != "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main" ||
+		!sameOrderedStrings(allowedOperations, []string{"foundation-plan", "foundation-apply", "foundation-verification"}) ||
+		!sameOrderedStrings(deniedOperations, []string{"adoption", "enforcement", "production-authority", "exception-replay"}) ||
+		stringValue(exception["single_use_initial_state"]) != "UNUSED" ||
+		stringValue(exception["single_use_terminal_state"]) != "CONSUMED" ||
+		!boolValue(exception["receipt_required"]) || stringValue(exception["receipt_digest_algorithm"]) != "sha256" ||
+		stringValue(exception["principal_id"]) != "founder-primary" ||
+		integerValue(exception["minimum_distinct_actor_accounts"]) != 2 ||
+		boolValue(exception["independent_principals"]) ||
+		boolValue(exception["production_authority"]) || err != nil ||
+		!expires.Equal(expires.UTC()) || !now.Before(expires) {
+		result["reason"] = "the exact FBE-0001 catalog authority is absent, malformed, or expired"
+		return result
+	}
+	accounts := stringList(exception["github_actor_accounts"])
+	if len(accounts) != 2 || accounts[0] != "mindclade-founder" || accounts[1] != "robpearc" {
+		result["reason"] = "the exception actor-account set is not exact"
+		return result
+	}
+	desiredAdmins := make(set)
+	for _, entry := range anyList(desired["members"]) {
+		member, _ := entry.(map[string]any)
+		login := strings.ToLower(stringValue(member["login"]))
+		active, hasActive := member["active"].(bool)
+		if stringValue(member["role"]) == "admin" && stringValue(member["principal_id"]) == "founder-primary" &&
+			(!hasActive || active) {
+			desiredAdmins.add(login)
+		}
+	}
+	observedMembers := observedMemberLogins(observed)
+	observedAdmins := observedAdminLogins(observed)
+	for _, account := range accounts {
+		if !desiredAdmins.has(account) || !observedMembers.has(account) || !observedAdmins.has(account) {
+			result["reason"] = "both exact founder actor accounts must be declared and observed as active administrators"
+			return result
+		}
+	}
+	result["eligible"] = true
+	result["status"] = "eligible"
 	return result
 }
 
@@ -1397,9 +1593,11 @@ func bindAdditionalAdoptions(
 		if stringValue(repositoryNames[repositoryKey]) != repositoryName {
 			continue
 		}
-		if liveAccess, ok := observedRepositoryActionsAccess[repositoryName].(map[string]any); ok &&
-			stringValue(liveAccess["access_level"]) == stringValue(repository["actions_access_level"]) {
-			adoptedRepositoryActionsAccess[repositoryKey] = repositoryName
+		if stringValue(repository["visibility"]) != "public" {
+			if liveAccess, ok := observedRepositoryActionsAccess[repositoryName].(map[string]any); ok &&
+				stringValue(liveAccess["access_level"]) == stringValue(repository["actions_access_level"]) {
+				adoptedRepositoryActionsAccess[repositoryKey] = repositoryName
+			}
 		}
 		if liveOIDC, ok := observedOIDCRepositories[repositoryName].(map[string]any); ok &&
 			liveOIDC["use_default"] == false &&
@@ -2379,7 +2577,8 @@ func collectActivationBlockers(value any, path string, add func(string, string))
 func reportActivationBlockers(activation map[string]any, path string, add func(string, string)) {
 	state, _ := activation["state"].(string)
 	blockers := stringList(activation["blockers"])
-	if state != "ready" && len(blockers) == 0 {
+	ready := state == "ready" || state == "CONNECTED_QUALIFIED"
+	if !ready && len(blockers) == 0 {
 		add("DESIRED_ACTIVATION_BLOCKED", fmt.Sprintf("%s: activation state is %q", pointerOrRoot(path), state))
 	}
 	for _, blocker := range blockers {

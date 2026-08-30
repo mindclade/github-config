@@ -20,6 +20,11 @@ on:
           - adopt
           - foundation
           - enforce
+      founder_bootstrap_exception_id:
+        description: Exact founder-bootstrap exception; leave empty for normal independent-principal review
+        required: false
+        default: ""
+        type: string
       acknowledge_privilege_expansion:
         description: Confirm the reviewed change record explicitly approves every catalog-authorized privilege expansion
         required: true
@@ -63,6 +68,8 @@ jobs:
       wif_qualification_expires_epoch: ${{ steps.activation-gate.outputs.wif_qualification_expires_epoch }}
       wif_qualified_source_sha: ${{ steps.activation-gate.outputs.wif_qualified_source_sha }}
       review_context_digest: ${{ steps.activation-gate.outputs.review_context_digest }}
+      review_mode: ${{ steps.activation-gate.outputs.review_mode }}
+      founder_bootstrap_exception_id: ${{ steps.activation-gate.outputs.founder_bootstrap_exception_id }}
       plan_evidence_kms_key_version: ${{ steps.activation-gate.outputs.plan_evidence_kms_key_version }}
       plan_evidence_kms_algorithm: ${{ steps.activation-gate.outputs.plan_evidence_kms_algorithm }}
       plan_evidence_public_key_digest: ${{ steps.activation-gate.outputs.plan_evidence_public_key_digest }}
@@ -84,7 +91,9 @@ jobs:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           ENVIRONMENT_APPROVER_ACTOR_IDS: ${{ vars.GHCFG_ENVIRONMENT_APPROVER_ACTOR_IDS }}
           FOUNDATION_READY: ${{ vars.GHCFG_FOUNDATION_READY }}
+          FOUNDER_BOOTSTRAP_EXCEPTION_ID: ${{ inputs.founder_bootstrap_exception_id }}
           GH_TOKEN: ${{ github.token }}
+          INDEPENDENT_REVIEWER_ACTOR_IDS: ${{ vars.GHCFG_INDEPENDENT_REVIEWER_ACTOR_IDS }}
           PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
           PLAN_APP_INSTALLATION_ID: ${{ vars.GHCFG_PLAN_APP_INSTALLATION_ID }}
           PLAN_APP_KEY_SECRET: ${{ vars.GHCFG_PLAN_APP_KEY_SECRET }}
@@ -113,6 +122,11 @@ jobs:
             echo "Protected apply is restricted to main." >&2
             exit 1
           fi
+          if [[ "$GITHUB_WORKFLOW_REF" != "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main" ||
+            "$GITHUB_WORKFLOW_SHA" != "$EXPECTED_SHA" ]]; then
+            echo "FBE and normal apply require the canonical workflow ref at the exact source SHA." >&2
+            exit 1
+          fi
           if [[ ! "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ || "$EXPECTED_SHA" != "$GITHUB_SHA" ]]; then
             echo "expected_sha must be the exact checked-out main SHA." >&2
             exit 1
@@ -129,23 +143,37 @@ jobs:
             fi
             tr ',' '\n' <<< "$value" | sort -n -u | paste -sd, -
           }
+          canonical_optional_ids() {
+            local value="$1"
+            if [[ -z "$value" ]]; then
+              return 0
+            fi
+            canonical_ids "$value"
+          }
           change_reviewer_ids="$(canonical_ids "$CHANGE_REVIEWER_ACTOR_IDS")"
           codeowner_reviewer_ids="$(canonical_ids "$CODEOWNER_REVIEWER_ACTOR_IDS")"
           environment_approver_ids="$(canonical_ids "$ENVIRONMENT_APPROVER_ACTOR_IDS")"
+          independent_reviewer_ids="$(canonical_optional_ids "$INDEPENDENT_REVIEWER_ACTOR_IDS")"
           test "$change_reviewer_ids" = "$CHANGE_REVIEWER_ACTOR_IDS"
           test "$codeowner_reviewer_ids" = "$CODEOWNER_REVIEWER_ACTOR_IDS"
           test "$environment_approver_ids" = "$ENVIRONMENT_APPROVER_ACTOR_IDS"
+          test "$independent_reviewer_ids" = "$INDEPENDENT_REVIEWER_ACTOR_IDS"
           [[ "$REVIEW_ROSTER_QUALIFICATION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           roster_digest="sha256:$(
             jq -S -n \
               --arg change_reviewers "$change_reviewer_ids" \
               --arg codeowners "$codeowner_reviewer_ids" \
-              --arg environment_approvers "$environment_approver_ids" '
+              --arg environment_approvers "$environment_approver_ids" \
+              --arg independent_reviewers "$independent_reviewer_ids" '
                 {
-                  version: "github-config-review-rosters/v1",
+                  version: "github-config-review-rosters/v2",
                   change_reviewer_actor_ids: ($change_reviewers | split(",") | map(tonumber)),
                   codeowner_reviewer_actor_ids: ($codeowners | split(",") | map(tonumber)),
-                  environment_approver_actor_ids: ($environment_approvers | split(",") | map(tonumber))
+                  environment_approver_actor_ids: ($environment_approvers | split(",") | map(tonumber)),
+                  independent_reviewer_actor_ids: (
+                    if $independent_reviewers == "" then []
+                    else ($independent_reviewers | split(",") | map(tonumber)) end
+                  )
                 }
               ' | sha256sum | cut -d' ' -f1
           )"
@@ -201,6 +229,13 @@ jobs:
               <<< "$latest_reviews"
           )"
           approved_ids="$(canonical_ids "$approved_ids")"
+          approved_logins="$(
+            jq -r --arg pull_head_sha "$pull_head_sha" '
+              [.[] | select(.state == "APPROVED" and .commit_id == $pull_head_sha) | .user.login | ascii_downcase]
+              | unique | sort | join(",")
+            ' <<< "$latest_reviews"
+          )"
+          [[ "$approved_logins" =~ ^[a-z0-9-]+(,[a-z0-9-]+)+$ ]]
           if (( $(tr ',' '\n' <<< "$approved_ids" | wc -l) < 2 )); then
             echo "The merged change requires at least two distinct approving actors." >&2
             exit 1
@@ -208,6 +243,37 @@ jobs:
           while IFS= read -r actor_id; do
             grep -qx "$actor_id" <(tr ',' '\n' <<< "$change_reviewer_ids")
           done < <(tr ',' '\n' <<< "$approved_ids")
+          review_mode="independent-principals"
+          review_independence_established=true
+          qualified_founder_exception_id=""
+          if [[ -z "$FOUNDER_BOOTSTRAP_EXCEPTION_ID" ]]; then
+            independent_approval_count="$(
+              comm -12 \
+                <(tr ',' '\n' <<< "$approved_ids" | sort -n) \
+                <(tr ',' '\n' <<< "$independent_reviewer_ids" | sort -n) \
+                | wc -l | tr -d ' '
+            )"
+            if (( independent_approval_count < 2 )); then
+              echo "Normal protected apply requires two independently qualified approving principals." >&2
+              exit 1
+            fi
+          else
+            if [[ "$FOUNDER_BOOTSTRAP_EXCEPTION_ID" != "FBE-0001" || "$ROLLOUT_PHASE" != "foundation" ]]; then
+              echo "Only exact FBE-0001 foundation bootstrap is supported." >&2
+              exit 1
+            fi
+            if (( $(date -u +%s) > 1790812799 )); then
+              echo "FBE-0001 is expired." >&2
+              exit 1
+            fi
+            if [[ "$approved_logins" != "mindclade-founder,robpearc" ]]; then
+              echo "FBE-0001 requires approvals from exactly mindclade-founder and robpearc." >&2
+              exit 1
+            fi
+            review_mode="founder-bootstrap-only"
+            review_independence_established=false
+            qualified_founder_exception_id="FBE-0001"
+          fi
           if ! comm -12 \
             <(tr ',' '\n' <<< "$approved_ids" | sort -n) \
             <(tr ',' '\n' <<< "$codeowner_reviewer_ids" | sort -n) \
@@ -224,17 +290,24 @@ jobs:
               --arg change_reference "$CHANGE_REFERENCE" \
               --arg approved_ids "$approved_ids" \
               --arg expected_sha "$EXPECTED_SHA" \
+              --arg exception_id "$qualified_founder_exception_id" \
               --arg pull_head_sha "$pull_head_sha" \
               --argjson pull_number "$pull_number" \
+              --arg review_mode "$review_mode" \
+              --argjson review_independence_established "$review_independence_established" \
               --arg roster_digest "$roster_digest" '
                 {
-                  version: "github-config-merged-review/v1",
+                  version: "github-config-merged-review/v2",
                   repository: "mindclade/github-config",
                   pull_number: $pull_number,
                   change_reference: $change_reference,
                   merge_commit_sha: $expected_sha,
                   reviewed_pull_head_sha: $pull_head_sha,
                   approved_actor_ids: ($approved_ids | split(",") | map(tonumber)),
+                  review_mode: $review_mode,
+                  founder_bootstrap_exception_id: (if $exception_id == "" then null else $exception_id end),
+                  independent_principals: $review_independence_established,
+                  production_authority: false,
                   review_roster_qualification_digest: $roster_digest,
                   reviewer_environment_approver_separation: true
                 }
@@ -398,6 +471,8 @@ jobs:
             echo "wif_qualification_expires_epoch=$WIF_QUALIFICATION_EXPIRES_EPOCH"
             echo "wif_qualified_source_sha=$WIF_QUALIFIED_SOURCE_SHA"
             echo "review_context_digest=$review_context_digest"
+            echo "review_mode=$review_mode"
+            echo "founder_bootstrap_exception_id=$qualified_founder_exception_id"
             echo "plan_evidence_kms_key_version=$PLAN_EVIDENCE_KMS_KEY_VERSION"
             echo "plan_evidence_kms_algorithm=$PLAN_EVIDENCE_KMS_ALGORITHM"
             echo "plan_evidence_public_key_digest=$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST"
@@ -840,6 +915,8 @@ jobs:
           PLAN_EVIDENCE_PUBLIC_KEY_DIGEST: ${{ needs.source-gate.outputs.plan_evidence_public_key_digest }}
           PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64: ${{ vars.GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64 }}
           REVIEW_CONTEXT_DIGEST: ${{ needs.source-gate.outputs.review_context_digest }}
+          REVIEW_MODE: ${{ needs.source-gate.outputs.review_mode }}
+          FOUNDER_BOOTSTRAP_EXCEPTION_ID: ${{ needs.source-gate.outputs.founder_bootstrap_exception_id }}
           RISK_ACKNOWLEDGED: ${{ inputs.acknowledge_privilege_expansion }}
           TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
           TF_STATE_PREFIX: ${{ vars.GHCFG_STATE_PREFIX }}
@@ -969,6 +1046,96 @@ jobs:
           )
           jq -e '.decision.eligible_for_protected_apply == true' \
             "$RUNNER_TEMP/plan-evidence.json" > /dev/null
+          if [[ "$REVIEW_MODE" == "founder-bootstrap-only" ]]; then
+            test "$FOUNDER_BOOTSTRAP_EXCEPTION_ID" = "FBE-0001"
+            saved_plan_digest="sha256:$(tr -d '\n' < "$RUNNER_TEMP/plan.digest")"
+            observation_digest="$(jq -r '.digests.observed_state' "$RUNNER_TEMP/plan-evidence.json")"
+            [[ "$saved_plan_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "$observation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            consumption_binding="$(
+              jq -S -c -n \
+                --arg exception_id "$FOUNDER_BOOTSTRAP_EXCEPTION_ID" \
+                --arg source_sha "$GITHUB_SHA" \
+                --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+                --arg workflow_sha "$GITHUB_WORKFLOW_SHA" \
+                --arg authorized_operation "foundation-apply" \
+                --arg saved_plan_digest "$saved_plan_digest" \
+                --arg observation_digest "$observation_digest" \
+                --arg review_context_digest "$REVIEW_CONTEXT_DIGEST" \
+                --argjson expires_epoch 1790812799 \
+                --argjson run_id "$GITHUB_RUN_ID" \
+                --argjson run_attempt "$GITHUB_RUN_ATTEMPT" '
+                  {
+                    exception_id: $exception_id,
+                    source_sha: $source_sha,
+                    workflow_ref: $workflow_ref,
+                    workflow_sha: $workflow_sha,
+                    authorized_operation: $authorized_operation,
+                    saved_immutable_plan_digest: $saved_plan_digest,
+                    observation_digest: $observation_digest,
+                    review_context_digest: $review_context_digest,
+                    expires_epoch: $expires_epoch,
+                    run_id: $run_id,
+                    run_attempt: $run_attempt
+                  }
+                '
+            )"
+            consumption_key="sha256:$(printf '%s' "$consumption_binding" | sha256sum | cut -d' ' -f1)"
+            receipt_base="$(
+              jq -S -c -n \
+                --arg source_sha "$GITHUB_SHA" \
+                --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+                --arg workflow_sha "$GITHUB_WORKFLOW_SHA" \
+                --arg saved_plan_digest "$saved_plan_digest" \
+                --arg observation_digest "$observation_digest" \
+                --arg review_context_digest "$REVIEW_CONTEXT_DIGEST" \
+                --arg consumption_key "$consumption_key" \
+                --argjson issued_epoch "$created_epoch" \
+                --argjson run_id "$GITHUB_RUN_ID" \
+                --argjson run_attempt "$GITHUB_RUN_ATTEMPT" '
+                  {
+                    api_version: "github.mindclade.io/v1",
+                    kind: "FounderBootstrapAuthorizationReceipt",
+                    authorization: "founder-bootstrap-only",
+                    exception_id: "FBE-0001",
+                    source_sha: $source_sha,
+                    workflow_ref: $workflow_ref,
+                    workflow_sha: $workflow_sha,
+                    allowed_operations: ["foundation-plan", "foundation-apply", "foundation-verification"],
+                    denied_operations: ["adoption", "enforcement", "production-authority", "exception-replay"],
+                    authorized_operation: "foundation-apply",
+                    saved_immutable_plan_digest: $saved_plan_digest,
+                    observation_digest: $observation_digest,
+                    review_context_digest: $review_context_digest,
+                    actor_accounts: ["mindclade-founder", "robpearc"],
+                    principal_id: "founder-primary",
+                    independent_principals: false,
+                    production_authority: false,
+                    receipt_required: true,
+                    receipt_digest_algorithm: "sha256",
+                    issued_epoch: $issued_epoch,
+                    expires_at: "2026-09-30T23:59:59Z",
+                    expires_epoch: 1790812799,
+                    single_use: {
+                      scope: "github-actions-run-attempt",
+                      run_id: $run_id,
+                      run_attempt: $run_attempt,
+                      consumption_key: $consumption_key,
+                      initial_state: "UNUSED",
+                      terminal_state: "CONSUMED",
+                      state: "UNUSED"
+                    }
+                  }
+                '
+            )"
+            receipt_digest="sha256:$(printf '%s' "$receipt_base" | sha256sum | cut -d' ' -f1)"
+            jq -S -c --arg receipt_digest "$receipt_digest" \
+              '. + {receipt_digest: $receipt_digest}' <<< "$receipt_base" \
+              > "$RUNNER_TEMP/founder-bootstrap-authorization.json"
+          else
+            test "$REVIEW_MODE" = "independent-principals"
+            test -z "$FOUNDER_BOOTSTRAP_EXCEPTION_ID"
+          fi
           if [[ ! "$PLAN_EVIDENCE_KMS_KEY_VERSION" =~ ^projects/([^/]+)/locations/([^/]+)/keyRings/([^/]+)/cryptoKeys/([^/]+)/cryptoKeyVersions/([^/]+)$ ]]; then
             echo "The qualified evidence key version is malformed." >&2
             exit 1
@@ -1023,6 +1190,7 @@ jobs:
             ${{ runner.temp }}/plan-evidence.json
             ${{ runner.temp }}/plan-evidence.sig
             ${{ runner.temp }}/plan-evidence-authentication.json
+            ${{ runner.temp }}/founder-bootstrap-authorization.json
             ${{ runner.temp }}/dependency-analysis.json
           if-no-files-found: error
           retention-days: 1
@@ -1457,6 +1625,8 @@ jobs:
           PLAN_EVIDENCE_KMS_KEY_VERSION: ${{ needs.source-gate.outputs.plan_evidence_kms_key_version }}
           PLAN_EVIDENCE_PUBLIC_KEY_DIGEST: ${{ needs.source-gate.outputs.plan_evidence_public_key_digest }}
           REVIEW_CONTEXT_DIGEST: ${{ needs.source-gate.outputs.review_context_digest }}
+          REVIEW_MODE: ${{ needs.source-gate.outputs.review_mode }}
+          FOUNDER_BOOTSTRAP_EXCEPTION_ID: ${{ needs.source-gate.outputs.founder_bootstrap_exception_id }}
           RISK_ACKNOWLEDGED: ${{ inputs.acknowledge_privilege_expansion }}
           ROLLOUT_PHASE: ${{ inputs.phase }}
           TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
@@ -1613,6 +1783,108 @@ jobs:
             "$RUNNER_TEMP/plan.json" | sha256sum | cut -d' ' -f1 \
             > "$RUNNER_TEMP/recomputed.digest"
           cmp "$RUNNER_TEMP/reviewed/plan.digest" "$RUNNER_TEMP/recomputed.digest"
+
+          founder_receipt="$RUNNER_TEMP/reviewed/founder-bootstrap-authorization.json"
+          if [[ "$REVIEW_MODE" == "founder-bootstrap-only" ]]; then
+            test "$FOUNDER_BOOTSTRAP_EXCEPTION_ID" = "FBE-0001"
+            test -f "$founder_receipt" && test ! -L "$founder_receipt"
+            expected_saved_plan_digest="sha256:$(tr -d '\n' < "$RUNNER_TEMP/reviewed/plan.digest")"
+            expected_observation_digest="$(jq -r '.digests.observed_state' "$RUNNER_TEMP/reviewed/plan-evidence.json")"
+            current_epoch="$(date -u +%s)"
+            jq -e \
+              --arg source_sha "$GITHUB_SHA" \
+              --arg workflow_ref "$GITHUB_WORKFLOW_REF" \
+              --arg workflow_sha "$GITHUB_WORKFLOW_SHA" \
+              --arg saved_plan_digest "$expected_saved_plan_digest" \
+              --arg observation_digest "$expected_observation_digest" \
+              --arg review_context_digest "$REVIEW_CONTEXT_DIGEST" \
+              --arg run_id "$GITHUB_RUN_ID" \
+              --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
+              --argjson current_epoch "$current_epoch" '
+                .api_version == "github.mindclade.io/v1"
+                and .kind == "FounderBootstrapAuthorizationReceipt"
+                and .authorization == "founder-bootstrap-only"
+                and .exception_id == "FBE-0001"
+                and .source_sha == $source_sha
+                and .workflow_ref == $workflow_ref
+                and .workflow_sha == $workflow_sha
+                and .allowed_operations == ["foundation-plan", "foundation-apply", "foundation-verification"]
+                and .denied_operations == ["adoption", "enforcement", "production-authority", "exception-replay"]
+                and .authorized_operation == "foundation-apply"
+                and .saved_immutable_plan_digest == $saved_plan_digest
+                and .observation_digest == $observation_digest
+                and .review_context_digest == $review_context_digest
+                and .actor_accounts == ["mindclade-founder", "robpearc"]
+                and .principal_id == "founder-primary"
+                and .independent_principals == false
+                and .production_authority == false
+                and .receipt_required == true
+                and .receipt_digest_algorithm == "sha256"
+                and .expires_at == "2026-09-30T23:59:59Z"
+                and .expires_epoch == 1790812799
+                and $current_epoch <= .expires_epoch
+                and .single_use.scope == "github-actions-run-attempt"
+                and .single_use.run_id == ($run_id | tonumber)
+                and .single_use.run_attempt == ($run_attempt | tonumber)
+                and .single_use.initial_state == "UNUSED"
+                and .single_use.terminal_state == "CONSUMED"
+                and .single_use.state == "UNUSED"
+                and (.single_use.consumption_key | test("^sha256:[0-9a-f]{64}$"))
+                and (.receipt_digest | test("^sha256:[0-9a-f]{64}$"))
+              ' "$founder_receipt" > /dev/null
+            receipt_base="$(jq -S -c 'del(.receipt_digest)' "$founder_receipt")"
+            expected_receipt_digest="sha256:$(printf '%s' "$receipt_base" | sha256sum | cut -d' ' -f1)"
+            test "$(jq -r '.receipt_digest' "$founder_receipt")" = "$expected_receipt_digest"
+            consumption_binding="$(
+              jq -S -c '{
+                exception_id,
+                source_sha,
+                workflow_ref,
+                workflow_sha,
+                authorized_operation,
+                saved_immutable_plan_digest,
+                observation_digest,
+                review_context_digest,
+                expires_epoch,
+                run_id: .single_use.run_id,
+                run_attempt: .single_use.run_attempt
+              }' "$founder_receipt"
+            )"
+            expected_consumption_key="sha256:$(printf '%s' "$consumption_binding" | sha256sum | cut -d' ' -f1)"
+            test "$(jq -r '.single_use.consumption_key' "$founder_receipt")" = "$expected_consumption_key"
+            consumption_marker="$RUNNER_TEMP/founder-bootstrap-${expected_consumption_key#sha256:}.consumed"
+            ( set -o noclobber; printf '%s\n' "$expected_receipt_digest" > "$consumption_marker" ) 2> /dev/null || {
+              echo "The FBE-0001 authorization receipt was already consumed in this run attempt." >&2
+              exit 1
+            }
+            jq -S -n \
+              --arg authorization_receipt_digest "$expected_receipt_digest" \
+              --arg consumption_key "$expected_consumption_key" \
+              --arg source_sha "$GITHUB_SHA" \
+              --argjson consumed_epoch "$current_epoch" \
+              --argjson run_id "$GITHUB_RUN_ID" \
+              --argjson run_attempt "$GITHUB_RUN_ATTEMPT" '
+                {
+                  api_version: "github.mindclade.io/v1",
+                  kind: "FounderBootstrapAuthorizationConsumption",
+                  exception_id: "FBE-0001",
+                  authorization_receipt_digest: $authorization_receipt_digest,
+                  consumption_key: $consumption_key,
+                  source_sha: $source_sha,
+                  run_id: $run_id,
+                  run_attempt: $run_attempt,
+                  consumed_epoch: $consumed_epoch,
+                  independent_principals: false,
+                  production_authority: false,
+                  prior_state: "UNUSED",
+                  state: "CONSUMED"
+                }
+              ' > "$RUNNER_TEMP/founder-bootstrap-consumption.json"
+          else
+            test "$REVIEW_MODE" = "independent-principals"
+            test -z "$FOUNDER_BOOTSTRAP_EXCEPTION_ID"
+            test ! -e "$founder_receipt"
+          fi
 
           replacements="$(jq '[.resource_changes[]? | select((.change.actions | index("delete")) and (.change.actions | index("create")))] | length' "$RUNNER_TEMP/plan.json")"
           forgets="$(jq '[.resource_changes[]? | select(.change.actions | index("forget"))] | length' "$RUNNER_TEMP/plan.json")"
@@ -1961,5 +2233,7 @@ jobs:
             ${{ runner.temp }}/post-apply-drift.json
             ${{ runner.temp }}/post-failure-drift.json
             ${{ runner.temp }}/reviewed/plan-evidence.json
+            ${{ runner.temp }}/reviewed/founder-bootstrap-authorization.json
+            ${{ runner.temp }}/founder-bootstrap-consumption.json
           if-no-files-found: error
           retention-days: 30

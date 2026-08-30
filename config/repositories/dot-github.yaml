@@ -6,7 +6,7 @@ metadata:
 spec:
   name: .github
   description: Organization-wide reusable workflows and community health policy.
-  visibility: internal
+  visibility: public
   actions_access_level: organization
   archived: false
   archive_on_destroy: true
@@ -35,11 +35,11 @@ spec:
     repository_class: governance-source
     owner_team: developer-platform
     criticality: high
-    data_classification: internal
+    data_classification: public
     lifecycle: active
     ci_profile: github-actions
     language_profile: workflow-yaml
-    production_authority: reusable-workflows
+    production_authority: none
   team_grants:
     - team: developer-platform
       permission: maintain

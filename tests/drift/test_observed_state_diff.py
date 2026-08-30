@@ -93,6 +93,32 @@ class ObservedStateDiffTest(unittest.TestCase):
                 "repository_settings": {repository: settings for repository in value["repositories"]},
             }
 
+        def repository(value):
+            projected = {
+                **pick(value, [
+                    "name", "description", "visibility", "archived", "features",
+                    "merge_policy", "custom_properties",
+                ]),
+                "web_commit_signoff_required": catalog["organization"]["web_commit_signoff_required"],
+                "security": pick(value["security"], [
+                    "vulnerability_alerts", "dependabot_security_updates", "advanced_security",
+                    "secret_scanning", "secret_scanning_push_protection",
+                ]),
+                "team_grants": [pick(grant, ["team", "permission"]) for grant in value["team_grants"]],
+                "direct_collaborators": [
+                    pick(collaborator, ["login", "permission"])
+                    for collaborator in value["direct_collaborators"]
+                ],
+            }
+            if value["visibility"].lower() == "public":
+                projected["actions_access_level"] = {
+                    "applicability": "not_applicable",
+                    "visibility": "public",
+                }
+            else:
+                projected["actions_access_level"] = value["actions_access_level"]
+            return projected
+
         organization = pick(catalog["organization"], [
             "organization_login", "default_repository_permission",
             "members_can_create_repositories", "members_can_create_public_repositories",
@@ -154,19 +180,7 @@ class ObservedStateDiffTest(unittest.TestCase):
                 for key, value in catalog["teams"].items()
             },
             "repositories": {
-                key: {
-                    **pick(value, ["name", "description", "visibility", "actions_access_level", "archived", "features", "merge_policy", "custom_properties"]),
-                    "web_commit_signoff_required": catalog["organization"]["web_commit_signoff_required"],
-                    "security": pick(value["security"], [
-                        "vulnerability_alerts", "dependabot_security_updates", "advanced_security",
-                        "secret_scanning", "secret_scanning_push_protection",
-                    ]),
-                    "team_grants": [pick(grant, ["team", "permission"]) for grant in value["team_grants"]],
-                    "direct_collaborators": [
-                        pick(collaborator, ["login", "permission"])
-                        for collaborator in value["direct_collaborators"]
-                    ],
-                }
+                key: repository(value)
                 for key, value in catalog["repositories"].items()
             },
             "rulesets": {
@@ -200,6 +214,72 @@ class ObservedStateDiffTest(unittest.TestCase):
             )
             self.assertIn("/repositories/github-config/actions_access_level", paths)
             self.assertIn("/organization/custom_properties", paths)
+
+    def test_public_repository_actions_access_projection_is_explicit_and_closed_world(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            desired = directory / "desired.json"
+            observed = directory / "observed.json"
+            report = directory / "report.json"
+            result = invoke("compile", "--output", str(desired))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            projection = self.managed_projection(json.loads(desired.read_text()))
+            repository_ids = {
+                "bootstrap", "dot-github", "github-config", "gitops",
+                "infrastructure-live", "mindclade",
+            }
+            self.assertEqual(set(projection["repositories"]), repository_ids)
+            public_semantics = {
+                "applicability": "not_applicable",
+                "visibility": "public",
+            }
+            self.assertEqual(
+                {
+                    repository_id: projection["repositories"][repository_id]["actions_access_level"]
+                    for repository_id in repository_ids
+                },
+                {repository_id: public_semantics for repository_id in repository_ids},
+            )
+
+            missing_projection = json.loads(json.dumps(projection))
+            for repository_id in repository_ids:
+                del missing_projection["repositories"][repository_id]["actions_access_level"]
+            observed.write_text(json.dumps({"managed_projection": missing_projection}))
+            missing = invoke(
+                "diff", "--desired", str(desired), "--observed", str(observed),
+                "--output", str(report),
+            )
+            self.assertEqual(missing.returncode, 2, missing.stderr)
+            missing_report = json.loads(report.read_text())
+            expected_paths = {
+                f"/repositories/{repository_id}/actions_access_level"
+                for repository_id in repository_ids
+            }
+            self.assertEqual(missing_report["summary"]["missing"], 6)
+            self.assertEqual(
+                {(change["kind"], change["path"]) for change in missing_report["changes"]},
+                {("missing", path) for path in expected_paths},
+            )
+
+            extra_projection = json.loads(json.dumps(projection))
+            extra_projection["repositories"]["github-config"]["actions_access_level"][
+                "undeclared_actions_control"
+            ] = True
+            observed.write_text(json.dumps({"managed_projection": extra_projection}))
+            extra = invoke(
+                "diff", "--desired", str(desired), "--observed", str(observed),
+                "--output", str(report),
+            )
+            self.assertEqual(extra.returncode, 2, extra.stderr)
+            extra_report = json.loads(report.read_text())
+            self.assertEqual(extra_report["summary"]["extra"], 1)
+            self.assertEqual(
+                {(change["kind"], change["path"]) for change in extra_report["changes"]},
+                {(
+                    "extra",
+                    "/repositories/github-config/actions_access_level/undeclared_actions_control",
+                )},
+            )
 
     def test_provider_required_repository_defaults_are_managed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -908,6 +988,12 @@ class ObservedStateDiffTest(unittest.TestCase):
         self.assertNotIn(
             "repository_actions_access:github-config",
             {error["section"] for error in public_observed["errors"]},
+        )
+        self.assertEqual(
+            public_observed["managed_projection"]["repositories"]["github-config"][
+                "actions_access_level"
+            ],
+            {"applicability": "not_applicable", "visibility": "public"},
         )
         self.assertIn(
             "environment_deployment_policies:infrastructure-live:infrastructure-apply",

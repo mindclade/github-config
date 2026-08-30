@@ -185,16 +185,26 @@ spec:
       workload_identity_provider_ref: verifier
       service_account_ref: ci-evidence-verifier
   activation:
-    state: blocked
+    state: FOUNDER_BOOTSTRAPPED
+    exception_ref: FBE-0001
+    active_subject_ids:
+      - bootstrap-protected-plan
+      - bootstrap-protected-apply
+      - bootstrap-recovery-verification
+      - infrastructure-live-development-plan
+      - infrastructure-live-development-apply
+      - infrastructure-live-staging-plan
+      - infrastructure-live-staging-apply
+      - infrastructure-live-production-plan
+      - infrastructure-live-production-apply
+      - infrastructure-live-restricted-plan
+      - infrastructure-live-restricted-apply
+      - github-config-drift-plan
+      - github-config-protected-plan
+      - github-config-protected-apply
+      - infrastructure-drift-plan
+      - infrastructure-ci-evidence-verifier
+    gated_subject_ids: []
     blockers:
-      - immutable-workflow-revisions-not-qualified
-      - immutable-owner-and-repository-ids-not-qualified
-      - workload-identity-federation-not-qualified
-      - github-config-drift-identity-not-connected-qualified
-      - github-config-protected-plan-identity-not-connected-qualified
-      - github-config-protected-apply-identity-not-connected-qualified
-      - infrastructure-drift-plan-identity-not-connected-qualified
-      - ci-evidence-verifier-canonical-audience-handoff-not-connected-qualified
-      - plan-evidence-signing-key-not-connected-qualified
-      - connected-workflow-authorities-not-qualified
-      - reusable-iac-interface-blueprint-amendment-required
+      - independent-review-not-connected-qualified
+      - production-authority-disabled

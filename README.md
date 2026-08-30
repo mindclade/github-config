@@ -21,6 +21,15 @@ provider/external controls. Clearing repository variables is not activation;
 approved source-contract changes and fresh connected evidence are both
 required before the enforce graph can become reachable.
 
+The declared estate profile is `github-free-public`: all six managed
+repositories are public and carry the `public` data-classification property.
+Every desired repository also carries `production_authority: none` until
+independent connected qualification replaces source bootstrap authority.
+Normal governance still requires two independent human principals. The exact,
+unexpired `FBE-0001` exception may use the two declared GitHub actor accounts
+mapped to `founder-primary` only for foundation bootstrap. It explicitly does
+not establish independence or production authority.
+
 The repository-local `flake.nix` and `flake.lock` are the sole system-toolchain
 authority for supported `aarch64-darwin` and `x86_64-linux` hosts. The flake
 exposes the reviewed toolchain package, identical default/CI shell closures,
@@ -65,11 +74,12 @@ fields, and refers to other objects by stable logical ID. Generated catalog,
 observation, plan, state, and evidence files are ephemeral and must not be
 committed.
 
-Every repository declares an Actions content access level. The organization
-`.github` repository alone uses `organization`; all other repositories use
-`none`. The provider resource, import binding, read-only REST observation,
-drift projection, and plan evidence all enforce that boundary. This setting
-shares reusable workflow implementations without making any repository public.
+Every repository declares an Actions access level; `.github` retains the
+catalog's `organization` reusable-workflow authority and the other repositories
+declare `none`. GitHub's repository access-level control is inapplicable to
+public repositories, so the provider resource, import binding, observation,
+and drift projection omit it for this public estate rather than pretending a
+private-repository sharing boundary exists.
 The visible `developer-platform` and `security` teams retain `maintain` and
 `push` access respectively so both `.github/CODEOWNERS` entries can resolve
 once connected team membership is qualified.
@@ -226,6 +236,18 @@ before apply can exchange an OIDC token and repeats
 immediately before the evidence is consumed. Missing, malformed, expired, or
 mismatched signing material fails closed.
 
+Normal protected review also requires two approved actor IDs from the
+bootstrap-qualified independent-principal roster. Only a manual dispatch with
+`founder_bootstrap_exception_id=FBE-0001` in `foundation` may instead use the
+exact `mindclade-founder` and `robpearc` accounts. That path emits a canonical,
+self-digesting authorization bound to the source SHA, saved plan digest,
+observed-state digest, review digest, exception expiry, workflow run, and run
+attempt. Apply validates every binding and creates an exclusive consumption
+marker before mutation; the receipt records no independence and no production
+authority. `UNUSED` is the only authorizable projection; consumption records
+the exact `UNUSED` to `CONSUMED` transition and its required `sha256` receipt
+digest. Legacy `active`, missing receipts, and reused projections fail closed.
+
 Required non-secret variables are:
 
 - `GHCFG_FOUNDATION_READY`, `GHCFG_ACTIVATION_READY`, and
@@ -238,6 +260,7 @@ Required non-secret variables are:
   `GHCFG_STATE_BACKEND_EVIDENCE_DIGEST`;
 - bootstrap-reviewed `GHCFG_EXECUTOR_CONTRACT_EVIDENCE_DIGEST`;
 - `GHCFG_CHANGE_REVIEWER_ACTOR_IDS`, `GHCFG_CODEOWNER_REVIEWER_ACTOR_IDS`,
+  `GHCFG_INDEPENDENT_REVIEWER_ACTOR_IDS`,
   `GHCFG_ENVIRONMENT_APPROVER_ACTOR_IDS`, and bootstrap-reviewed
   `GHCFG_REVIEW_ROSTER_QUALIFICATION_DIGEST`; reviewer and environment-approver
   actor sets must be canonical, qualified, and disjoint;
