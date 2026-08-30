@@ -34,6 +34,7 @@ type Catalog struct {
 	Teams                map[string]any `json:"teams"`
 	Repositories         map[string]any `json:"repositories"`
 	Rulesets             map[string]any `json:"rulesets"`
+	RepositoryGates      map[string]any `json:"repository_gates"`
 	Environments         map[string]any `json:"environments"`
 	Integrations         map[string]any `json:"integrations"`
 	SourceDigest         string         `json:"source_digest,omitempty"`
@@ -74,10 +75,13 @@ var sourceDefinitions = []sourceDefinition{
 	{"config/rulesets/infrastructure-source.yaml", "ruleset.schema.json", "Ruleset", "rulesets"},
 	{"config/rulesets/deployment-source.yaml", "ruleset.schema.json", "Ruleset", "rulesets"},
 	{"config/rulesets/release-tags.yaml", "ruleset.schema.json", "Ruleset", "rulesets"},
+	{"config/repository-gates/infrastructure-live-authorities.yaml", "repository_gate.schema.json", "RepositoryGate", "repository_gates"},
 	{"config/environments/trusted-build.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/environments/release-signing.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/environments/infrastructure-apply.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/environments/production-promotion.yaml", "environment.schema.json", "Environment", "environments"},
+	{"config/environments/infrastructure-source-review.yaml", "environment.schema.json", "Environment", "environments"},
+	{"config/environments/security-source-review.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/integrations/buildkite.yaml", "integration.schema.json", "Integration", "integrations"},
 	{"config/integrations/artifact-signing.yaml", "integration.schema.json", "Integration", "integrations"},
 	{"config/integrations/gitops-controller.yaml", "integration.schema.json", "Integration", "integrations"},
@@ -91,6 +95,7 @@ var schemaFiles = []string{
 	"oidc_policy.schema.json",
 	"organization.schema.json",
 	"repository.schema.json",
+	"repository_gate.schema.json",
 	"ruleset.schema.json",
 	"security_policy.schema.json",
 	"team.schema.json",
@@ -108,6 +113,7 @@ func Compile(root string) (*Catalog, error) {
 		Teams:                make(map[string]any),
 		Repositories:         make(map[string]any),
 		Rulesets:             make(map[string]any),
+		RepositoryGates:      make(map[string]any),
 		Environments:         make(map[string]any),
 		Integrations:         make(map[string]any),
 		Members:              []any{},
@@ -155,6 +161,8 @@ func Compile(root string) (*Catalog, error) {
 			result.Repositories[document.ID] = document.Spec
 		case "rulesets":
 			result.Rulesets[document.ID] = document.Spec
+		case "repository_gates":
+			result.RepositoryGates[document.ID] = document.Spec
 		case "environments":
 			result.Environments[document.ID] = document.Spec
 		case "integrations":
@@ -210,6 +218,7 @@ func (catalog *Catalog) AsMap() map[string]any {
 		"teams":                 catalog.Teams,
 		"repositories":          catalog.Repositories,
 		"rulesets":              catalog.Rulesets,
+		"repository_gates":      catalog.RepositoryGates,
 		"environments":          catalog.Environments,
 		"integrations":          catalog.Integrations,
 		"source_digest":         catalog.SourceDigest,
@@ -227,7 +236,7 @@ func PolicyInput(root string) (map[string]any, error) {
 	result := map[string]any{
 		"api_version": validation.APIVersion,
 		"memberships": []any{}, "teams": []any{}, "repositories": []any{},
-		"rulesets": []any{}, "environments": []any{}, "integrations": []any{},
+		"rulesets": []any{}, "repository_gates": []any{}, "environments": []any{}, "integrations": []any{},
 		"tokens": []any{}, "workflow_qualifications": []any{},
 	}
 	for _, document := range documents {
@@ -248,6 +257,8 @@ func PolicyInput(root string) (map[string]any, error) {
 			result["repositories"] = append(result["repositories"].([]any), document.Raw)
 		case "Ruleset":
 			result["rulesets"] = append(result["rulesets"].([]any), document.Raw)
+		case "RepositoryGate":
+			result["repository_gates"] = append(result["repository_gates"].([]any), document.Raw)
 		case "Environment":
 			result["environments"] = append(result["environments"].([]any), document.Raw)
 		case "Integration":

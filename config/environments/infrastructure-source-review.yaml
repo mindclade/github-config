@@ -1,0 +1,28 @@
+api_version: github.mindclade.io/v1
+kind: Environment
+metadata:
+  id: infrastructure-source-review
+  owner_team: platform-operations
+spec:
+  name: infrastructure-source-review
+  repositories: [infrastructure-live]
+  prevent_self_review: true
+  can_admins_bypass: false
+  required_reviewers:
+    - type: team
+      team: platform-operations
+  approval_policy:
+    minimum_required_reviewers: 1
+    minimum_distinct_principals: 2
+    require_pr_approval: true
+    require_code_owner_review: true
+    require_reviewer_different_from_pr_approver: true
+  deployment_branch_policy:
+    protected_branches: false
+    custom_branch_policies: true
+    branch_patterns: [refs/pull/*/merge, refs/heads/gh-readonly-queue/main/*]
+    tag_patterns: []
+  allowed_workflows: [.github/workflows/authority-review.yml]
+  activation:
+    state: blocked
+    blockers: [independent-reviewer-required, protected-environment-not-qualified]

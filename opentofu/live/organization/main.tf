@@ -11,6 +11,7 @@ variable "catalog" {
     teams                 = any
     repositories          = any
     rulesets              = any
+    repository_gates      = any
     environments          = any
     integrations          = any
     activation            = optional(any, {})
@@ -43,6 +44,7 @@ variable "catalog" {
       can(keys(var.catalog.teams)) &&
       can(keys(var.catalog.repositories)) &&
       can(keys(var.catalog.rulesets)) &&
+      can(keys(var.catalog.repository_gates)) &&
       can(keys(var.catalog.environments)) &&
       can(keys(var.catalog.integrations))
     )
@@ -156,14 +158,26 @@ variable "qualified_status_check_integration_ids" {
     condition = alltrue([
       for issuer_type, integration_id in var.qualified_status_check_integration_ids :
       length(flatten([
-        for ruleset in values(var.catalog.rulesets) : [
+        for ruleset in concat(values(var.catalog.rulesets), values(var.catalog.repository_gates)) : [
           for check in try(ruleset.rules.required_status_checks.checks, []) : check
+          if check.issuer_type == issuer_type
+        ]
+        ])) + length(flatten([
+        for gate in values(var.catalog.repository_gates) : [
+          for check in try(gate.required_status_checks.checks, []) : check
           if check.issuer_type == issuer_type
         ]
       ])) > 0 &&
       alltrue(flatten([
         for ruleset in values(var.catalog.rulesets) : [
           for check in try(ruleset.rules.required_status_checks.checks, []) :
+          try(check.integration_id == integration_id, false)
+          if check.issuer_type == issuer_type
+        ]
+      ])) &&
+      alltrue(flatten([
+        for gate in values(var.catalog.repository_gates) : [
+          for check in try(gate.required_status_checks.checks, []) :
           try(check.integration_id == integration_id, false)
           if check.issuer_type == issuer_type
         ]
@@ -251,13 +265,45 @@ variable "adopted_environment_ids" {
 }
 
 variable "adopted_environment_policy_ids" {
-  description = "Reserved compatibility map for pre-existing custom environment policies; catalog v1 cannot express patterns, so it must remain empty."
+  description = "Reviewed existing custom environment deployment-policy IDs keyed by assignment:type:pattern."
   type        = map(string)
   default     = {}
 
   validation {
-    condition     = length(var.adopted_environment_policy_ids) == 0
-    error_message = "adopted_environment_policy_ids must remain empty because catalog v1 does not declare exact branch/tag patterns and the graph intentionally creates no custom deployment-policy resources."
+    condition = alltrue([
+      for policy_key, import_id in var.adopted_environment_policy_ids :
+      length(split(":", import_id)) == 3 &&
+      can(tonumber(split(":", import_id)[2])) &&
+      contains(flatten([
+        for environment_key, environment in var.catalog.environments : flatten([
+          for repository_reference in environment.repositories : concat(
+            [
+              for pattern in try(environment.deployment_branch_policy.branch_patterns, []) :
+              "${environment_key}:${repository_reference}:branch:${pattern}=${coalesce(
+                try(var.catalog.repositories[repository_reference].name, null),
+                try(one([
+                  for repository in values(var.catalog.repositories) : repository.name
+                  if repository.name == repository_reference
+                ]), null),
+                repository_reference,
+              )}:${environment.name}:${split(":", import_id)[2]}"
+            ],
+            [
+              for pattern in try(environment.deployment_branch_policy.tag_patterns, []) :
+              "${environment_key}:${repository_reference}:tag:${pattern}=${coalesce(
+                try(var.catalog.repositories[repository_reference].name, null),
+                try(one([
+                  for repository in values(var.catalog.repositories) : repository.name
+                  if repository.name == repository_reference
+                ]), null),
+                repository_reference,
+              )}:${environment.name}:${split(":", import_id)[2]}"
+            ],
+          )
+        ])
+      ]), "${policy_key}=${import_id}")
+    ])
+    error_message = "Adopted deployment policies must exactly bind a declared assignment:type:pattern key to repository:environment:numeric-policy-id."
   }
 }
 
@@ -495,6 +541,13 @@ locals {
     length(ruleset.bypass_actors.unresolved_integrations) == 0
   ])
 
+  repository_gate_enforcement_ready = alltrue([
+    for gate in values(module.rulesets.repository_gate_preflight) :
+    gate.required_deployments.managed &&
+    gate.status_check_issuers.managed &&
+    gate.bypass_actors.managed
+  ])
+
   organization_enforcement_ready = (
     module.organization_settings.deployment_preflight.organization_settings.managed &&
     (!module.organization_settings.deployment_preflight.two_factor_requirement.desired || module.organization_settings.deployment_preflight.two_factor_requirement.managed) &&
@@ -528,6 +581,7 @@ locals {
     local.organization_enforcement_ready &&
     local.repository_enforcement_ready &&
     local.ruleset_enforcement_ready &&
+    local.repository_gate_enforcement_ready &&
     local.environment_enforcement_ready &&
     local.access_enforcement_ready
   )
@@ -578,11 +632,15 @@ module "rulesets" {
   source = "../../modules/ruleset"
 
   rulesets                               = var.catalog.rulesets
+  repository_gates                       = var.catalog.repository_gates
   repository_names                       = module.repository_governance.repository_names
+  environment_names                      = { for key, environment in var.catalog.environments : key => environment.name }
   team_ids                               = module.team_access.team_ids
   rollout_phase                          = var.rollout_phase
   qualified_integration_actor_ids        = var.qualified_integration_actor_ids
   qualified_status_check_integration_ids = var.qualified_status_check_integration_ids
+
+  depends_on = [module.repository_environments]
 }
 
 module "repository_environments" {

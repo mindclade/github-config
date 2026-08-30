@@ -1,0 +1,28 @@
+api_version: github.mindclade.io/v1
+kind: RepositoryGate
+metadata:
+  id: infrastructure-live-authorities
+  owner_team: security
+spec:
+  name: infrastructure-live-authorities
+  repository: infrastructure-live
+  target: branch
+  enforcement: active
+  include_refs: [~DEFAULT_BRANCH]
+  exclude_refs: []
+  bypass_actors: []
+  required_status_checks:
+    strict: true
+    checks:
+      - context: Authority review / platform-operations
+        issuer_type: github_actions
+        workflow_path: .github/workflows/authority-review.yml
+        triggers: [pull_request, merge_group]
+      - context: Authority review / security
+        issuer_type: github_actions
+        workflow_path: .github/workflows/authority-review.yml
+        triggers: [pull_request, merge_group]
+  required_deployments: [infrastructure-source-review, security-source-review]
+  activation:
+    state: blocked
+    blockers: [independent-reviewer-required, protected-environment-not-qualified, status-check-integration-not-qualified]

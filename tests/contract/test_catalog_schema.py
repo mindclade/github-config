@@ -67,13 +67,15 @@ class CatalogSchemaTest(unittest.TestCase):
             *{f"config/rulesets/{name}.yaml" for name in (
                 "application-source", "governance-source", "infrastructure-source", "deployment-source", "release-tags",
             )},
+            "config/repository-gates/infrastructure-live-authorities.yaml",
             *{f"config/environments/{name}.yaml" for name in (
                 "trusted-build", "release-signing", "infrastructure-apply", "production-promotion",
+                "infrastructure-source-review", "security-source-review",
             )},
             *{f"config/integrations/{name}.yaml" for name in ("buildkite", "artifact-signing", "gitops-controller")},
             *{f"schemas/v1/{name}.schema.json" for name in (
                 "organization", "actions_policy", "security_policy", "oidc_policy", "membership",
-                "team", "repository", "ruleset", "environment", "integration",
+                "team", "repository", "ruleset", "repository_gate", "environment", "integration",
             )},
             "compiler/cmd/github-configctl/main.go", "compiler/internal/catalog/catalog.go",
             "compiler/internal/validation/validation.go", "compiler/internal/rendering/rendering.go",
@@ -132,6 +134,8 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(len(policy_input["memberships"]), 2)
         self.assertEqual(len(policy_input["repositories"]), 6)
         self.assertEqual(len(policy_input["rulesets"]), 5)
+        self.assertEqual(len(policy_input["repository_gates"]), 1)
+        self.assertEqual(len(policy_input["environments"]), 6)
         self.assertEqual(len(policy_input["workflows"]), 3)
         self.assertTrue(all(workflow["uses"] for workflow in policy_input["workflows"]))
         self.assertNotIn(
@@ -224,6 +228,13 @@ class CatalogSchemaTest(unittest.TestCase):
         result = invoke("validate", root=root)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("has no exact immutable OIDC subject authority", result.stderr)
+
+        root = self.temporary_catalog()
+        environment = root / "config" / "environments" / "security-source-review.yaml"
+        environment.write_text(environment.read_text().replace("      team: security", "      team: platform-operations", 1))
+        result = invoke("validate", root=root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("distinct reviewer authority teams", result.stderr)
 
     def test_semantic_identity_and_security_policy_invariants(self):
         root = self.temporary_catalog()

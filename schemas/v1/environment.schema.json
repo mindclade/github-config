@@ -57,8 +57,31 @@
       "required": ["protected_branches", "custom_branch_policies"],
       "properties": {
         "protected_branches": {"type": "boolean"},
-        "custom_branch_policies": {"type": "boolean"}
-      }
+        "custom_branch_policies": {"type": "boolean"},
+        "branch_patterns": {"type": "array", "default": [], "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "tag_patterns": {"type": "array", "default": [], "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"custom_branch_policies": {"const": true}}},
+          "then": {
+            "properties": {
+              "protected_branches": {"const": false}
+            },
+            "anyOf": [
+              {"properties": {"branch_patterns": {"minItems": 1}}},
+              {"properties": {"tag_patterns": {"minItems": 1}}}
+            ]
+          },
+          "else": {
+            "properties": {
+              "protected_branches": {"const": true},
+              "branch_patterns": {"maxItems": 0},
+              "tag_patterns": {"maxItems": 0}
+            }
+          }
+        }
+      ]
     },
     "spec": {
       "type": "object",

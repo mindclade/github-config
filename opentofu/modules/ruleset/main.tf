@@ -12,6 +12,25 @@ locals {
     { for name in values(var.repository_names) : name => name },
   )
 
+  environment_reference_to_name = merge(
+    var.environment_names,
+    { for name in values(var.environment_names) : name => name },
+  )
+
+  repository_gates = {
+    for key, gate in var.repository_gates : key => merge(gate, {
+      repository_name = lookup(local.repository_reference_to_name, gate.repository, gate.repository)
+      environment_names = [
+        for reference in gate.required_deployments :
+        lookup(local.environment_reference_to_name, reference, reference)
+      ]
+      effective_enforcement = (
+        var.rollout_phase == "enforce" && gate.activation.state == "ready" && length(gate.activation.blockers) == 0 ? gate.enforcement :
+        var.rollout_phase == "foundation" ? "evaluate" : "disabled"
+      )
+    })
+  }
+
   logical_rulesets = {
     for key, ruleset in var.rulesets : key => merge(ruleset, {
       logical_key    = key
@@ -270,6 +289,73 @@ resource "github_organization_ruleset" "this" {
         !each.value.rules.merge_queue
       )
       error_message = "Active merge-queue enforcement remains blocked because provider 6.13.0 cannot materialize the desired organization ruleset control."
+    }
+  }
+}
+
+resource "github_repository_ruleset" "gate" {
+  for_each = local.repository_gates
+
+  repository  = each.value.repository_name
+  name        = each.value.name
+  target      = each.value.target
+  enforcement = each.value.effective_enforcement
+
+  conditions {
+    ref_name {
+      include = each.value.include_refs
+      exclude = each.value.exclude_refs
+    }
+  }
+
+  rules {
+    required_deployments {
+      required_deployment_environments = each.value.environment_names
+    }
+
+    required_status_checks {
+      strict_required_status_checks_policy = each.value.required_status_checks.strict
+      do_not_enforce_on_create             = false
+
+      dynamic "required_check" {
+        for_each = each.value.required_status_checks.checks
+
+        content {
+          context = required_check.value.context
+          integration_id = try(coalesce(
+            required_check.value.integration_id,
+            lookup(var.qualified_status_check_integration_ids, required_check.value.issuer_type, null),
+          ), null)
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    prevent_destroy = true
+
+    precondition {
+      condition     = contains(keys(local.repository_reference_to_name), each.value.repository)
+      error_message = "Repository gate references an unknown repository."
+    }
+
+    precondition {
+      condition = alltrue([
+        for reference in each.value.required_deployments :
+        contains(keys(local.environment_reference_to_name), reference)
+      ])
+      error_message = "Repository gate references an unknown protected environment."
+    }
+
+    precondition {
+      condition = (
+        each.value.effective_enforcement != "active" ||
+        alltrue([
+          for check in each.value.required_status_checks.checks :
+          check.integration_id != null || contains(keys(var.qualified_status_check_integration_ids), check.issuer_type)
+        ])
+      )
+      error_message = "Active repository authority checks require preflight-qualified numeric GitHub Actions issuer IDs."
     }
   }
 }

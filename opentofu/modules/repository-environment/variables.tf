@@ -20,6 +20,8 @@ variable "environments" {
     deployment_branch_policy = object({
       protected_branches     = bool
       custom_branch_policies = bool
+      branch_patterns        = optional(list(string), [])
+      tag_patterns           = optional(list(string), [])
     })
     allowed_workflows = list(string)
     activation        = optional(any)
@@ -42,10 +44,14 @@ variable "environments" {
   validation {
     condition = alltrue([
       for environment in values(var.environments) :
-      environment.deployment_branch_policy.protected_branches &&
-      !environment.deployment_branch_policy.custom_branch_policies
+      environment.deployment_branch_policy.protected_branches != environment.deployment_branch_policy.custom_branch_policies &&
+      (
+        environment.deployment_branch_policy.custom_branch_policies ?
+        length(environment.deployment_branch_policy.branch_patterns) + length(environment.deployment_branch_policy.tag_patterns) > 0 :
+        length(environment.deployment_branch_policy.branch_patterns) + length(environment.deployment_branch_policy.tag_patterns) == 0
+      )
     ])
-    error_message = "Catalog v1 environments must use protected branches; custom branch/tag policies are not source-expressible and are rejected fail closed."
+    error_message = "Environment branch policy modes are mutually exclusive; custom policies require at least one exact branch or tag pattern and protected-branch policies may not declare patterns."
   }
 }
 

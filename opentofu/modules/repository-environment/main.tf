@@ -41,6 +41,28 @@ locals {
       }
     ]...
   )
+
+  deployment_policies = merge(
+    {},
+    [
+      for assignment_key, assignment in local.assignments : merge(
+        {
+          for pattern in assignment.branch_policy.branch_patterns :
+          "${assignment_key}:branch:${pattern}" => merge(assignment, {
+            policy_type = "branch"
+            pattern     = pattern
+          })
+        },
+        {
+          for pattern in assignment.branch_policy.tag_patterns :
+          "${assignment_key}:tag:${pattern}" => merge(assignment, {
+            policy_type = "tag"
+            pattern     = pattern
+          })
+        },
+      )
+    ]...
+  )
 }
 
 resource "github_repository_environment" "this" {
@@ -87,5 +109,20 @@ resource "github_repository_environment" "this" {
       ])
       error_message = "Environment reviewer teams must have an explicit repository grant."
     }
+  }
+}
+
+resource "github_repository_environment_deployment_policy" "this" {
+  for_each = local.deployment_policies
+
+  repository     = each.value.repository_name
+  environment    = each.value.environment_name
+  branch_pattern = each.value.policy_type == "branch" ? each.value.pattern : null
+  tag_pattern    = each.value.policy_type == "tag" ? each.value.pattern : null
+
+  depends_on = [github_repository_environment.this]
+
+  lifecycle {
+    prevent_destroy = true
   }
 }

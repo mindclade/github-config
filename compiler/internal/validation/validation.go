@@ -78,6 +78,7 @@ func ValidateCatalog(documents []*Document) error {
 	repositories := make(set)
 	integrations := make(set)
 	environments := make(set)
+	environmentSpecs := make(map[string]map[string]any)
 	organizationMemberLogins := make(set)
 	organizationMemberPrincipals := make(map[string]string)
 	securityRequirements := make(map[string]bool)
@@ -112,7 +113,10 @@ func ValidateCatalog(documents []*Document) error {
 		case "Environment":
 			environments.add(document.ID)
 			if spec, ok := document.Spec.(map[string]any); ok {
-				environments.add(stringValue(spec["name"]))
+				name := stringValue(spec["name"])
+				environments.add(name)
+				environmentSpecs[strings.ToLower(document.ID)] = spec
+				environmentSpecs[strings.ToLower(name)] = spec
 			}
 		case "Membership":
 			spec, _ := document.Spec.(map[string]any)
@@ -324,6 +328,56 @@ func ValidateCatalog(documents []*Document) error {
 			}
 			if err := requireReferences(document.Path, "spec.rules.authorized_creator_integrations", valuesForKey(spec, "authorized_creator_integrations"), integrations); err != nil {
 				return err
+			}
+		case "RepositoryGate":
+			if err := requireReference(document.Path, "spec.repository", stringValue(spec["repository"]), repositories); err != nil {
+				return err
+			}
+			if err := requireReferences(document.Path, "spec.required_deployments", stringList(spec["required_deployments"]), environments); err != nil {
+				return err
+			}
+			checkContexts := make(set)
+			workflowPaths := make(set)
+			for _, check := range objectList(specObject(spec, "required_status_checks")["checks"]) {
+				context := stringValue(check["context"])
+				if checkContexts.has(context) {
+					return fmt.Errorf("%s: duplicate required status-check context %q", document.Path, context)
+				}
+				checkContexts.add(context)
+				workflowPaths.add(stringValue(check["workflow_path"]))
+			}
+			gateRepository := repositoryCanonicalNames[strings.ToLower(stringValue(spec["repository"]))]
+			reviewerTeams := make(set)
+			for _, environmentReference := range stringList(spec["required_deployments"]) {
+				environment := environmentSpecs[strings.ToLower(environmentReference)]
+				assigned := false
+				for _, repositoryReference := range stringList(environment["repositories"]) {
+					if repositoryCanonicalNames[strings.ToLower(repositoryReference)] == gateRepository {
+						assigned = true
+						break
+					}
+				}
+				if !assigned {
+					return fmt.Errorf("%s: required deployment %q is not assigned to repository %q", document.Path, environmentReference, stringValue(spec["repository"]))
+				}
+				reviewers := objectList(environment["required_reviewers"])
+				if len(reviewers) != 1 || stringValue(reviewers[0]["team"]) == "" {
+					return fmt.Errorf("%s: required deployment %q must name exactly one reviewer authority team", document.Path, environmentReference)
+				}
+				team := stringValue(reviewers[0]["team"])
+				if reviewerTeams.has(team) {
+					return fmt.Errorf("%s: required deployments must use distinct reviewer authority teams", document.Path)
+				}
+				reviewerTeams.add(team)
+				allowedWorkflows := make(set)
+				for _, workflow := range stringList(environment["allowed_workflows"]) {
+					allowedWorkflows.add(workflow)
+				}
+				for workflow := range workflowPaths {
+					if !allowedWorkflows.has(workflow) {
+						return fmt.Errorf("%s: required deployment %q does not allow authority workflow %q", document.Path, environmentReference, workflow)
+					}
+				}
 			}
 		case "Environment":
 			if err := requireReferences(document.Path, "spec.repositories", stringList(spec["repositories"]), repositories); err != nil {
@@ -551,6 +605,35 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 			}
 			if int64(len(available)) < minimum {
 				add("REVIEWER_QUORUM_UNSATISFIED", fmt.Sprintf("environment %q requires %d distinct principals but reviewer teams provide %d", id, minimum, len(available)))
+			}
+		}
+		repositoryGates, _ := desired["repository_gates"].(map[string]any)
+		for gateID, value := range repositoryGates {
+			gate, _ := value.(map[string]any)
+			authorities := make([]set, 0, len(stringList(gate["required_deployments"])))
+			for _, environmentID := range stringList(gate["required_deployments"]) {
+				environment, _ := environments[environmentID].(map[string]any)
+				principals := make(set)
+				for _, reviewer := range objectList(environment["required_reviewers"]) {
+					for principal := range teamPrincipals[strings.ToLower(stringValue(reviewer["team"]))] {
+						principals.add(principal)
+					}
+				}
+				authorities = append(authorities, principals)
+			}
+			distinct := true
+			for left := 0; left < len(authorities) && distinct; left++ {
+				for right := left + 1; right < len(authorities) && distinct; right++ {
+					for principal := range authorities[left] {
+						if authorities[right].has(principal) {
+							distinct = false
+							break
+						}
+					}
+				}
+			}
+			if !distinct {
+				add("REVIEW_AUTHORITIES_NOT_DISTINCT", fmt.Sprintf("repository gate %q reviewer authorities share one or more active human principals", gateID))
 			}
 		}
 		validateDesiredAccess(desired, add)

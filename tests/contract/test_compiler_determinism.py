@@ -52,7 +52,7 @@ class CompilerDeterminismTest(unittest.TestCase):
                 set(catalog),
                 {"api_version", "activation", "organization", "actions_policy", "security_policy", "oidc_policy",
                  "members", "outside_collaborators", "teams", "repositories", "rulesets",
-                 "environments", "integrations", "source_digest"},
+                 "repository_gates", "environments", "integrations", "source_digest"},
             )
 
     def test_tofu_variable_file_wraps_the_identical_catalog(self):

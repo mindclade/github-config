@@ -82,8 +82,54 @@ variable "rulesets" {
   }
 }
 
+variable "repository_gates" {
+  description = "Repository-scoped authority gates keyed by stable catalog identifier."
+  type = map(object({
+    name                 = string
+    repository           = string
+    target               = string
+    enforcement          = string
+    include_refs         = list(string)
+    exclude_refs         = list(string)
+    bypass_actors        = list(any)
+    required_deployments = list(string)
+    required_status_checks = object({
+      strict = bool
+      checks = list(object({
+        context        = string
+        issuer_type    = string
+        workflow_path  = string
+        triggers       = list(string)
+        integration_id = optional(number)
+      }))
+    })
+    activation = object({
+      state    = string
+      blockers = list(string)
+    })
+  }))
+
+  validation {
+    condition = alltrue([
+      for gate in values(var.repository_gates) :
+      gate.target == "branch" &&
+      contains(["disabled", "evaluate", "active"], gate.enforcement) &&
+      length(gate.include_refs) > 0 &&
+      length(gate.bypass_actors) == 0 &&
+      length(gate.required_deployments) >= 2 &&
+      length(gate.required_status_checks.checks) >= 2
+    ])
+    error_message = "Repository gates require branch refs, at least two deployments and checks, and no bypass actors."
+  }
+}
+
 variable "repository_names" {
   description = "Repository names keyed by stable catalog identifier."
+  type        = map(string)
+}
+
+variable "environment_names" {
+  description = "Repository environment names keyed by stable catalog identifier."
   type        = map(string)
 }
 

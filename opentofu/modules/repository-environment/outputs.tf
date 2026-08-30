@@ -29,10 +29,10 @@ output "deployment_preflight" {
         reason              = "provider 6.13.0 cannot materialize an environment workflow allowlist; enforce remains blocked until exact OIDC and bootstrap qualification proves an equivalent workflow/ref/source binding"
       }
       custom_deployment_policies = {
-        managed             = !environment.deployment_branch_policy.custom_branch_policies
-        enforcement_blocked = environment.deployment_branch_policy.custom_branch_policies
+        managed             = true
+        enforcement_blocked = false
         desired             = environment.deployment_branch_policy
-        reason              = "catalog v1 declares only protected/custom policy mode and no branch/tag patterns; custom deployment policies are rejected rather than synthesized from defaults"
+        reason              = "exact catalog branch and tag patterns are managed as repository environment deployment-policy resources"
       }
     }
   }
@@ -42,6 +42,6 @@ output "managed_resource_ids" {
   description = "Non-sensitive environment resource identifiers for evidence."
   value = {
     environments        = { for key, environment in github_repository_environment.this : key => environment.id }
-    deployment_policies = {}
+    deployment_policies = { for key, policy in github_repository_environment_deployment_policy.this : key => policy.id }
   }
 }

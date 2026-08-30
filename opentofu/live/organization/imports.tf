@@ -108,3 +108,10 @@ import {
   to = module.repository_environments.github_repository_environment.this[each.key]
   id = each.value
 }
+
+import {
+  for_each = var.adopted_environment_policy_ids
+
+  to = module.repository_environments.github_repository_environment_deployment_policy.this[each.key]
+  id = each.value
+}
