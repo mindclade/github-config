@@ -680,7 +680,8 @@ class CatalogSchemaTest(unittest.TestCase):
         expected = {
             ".editorconfig", ".gitignore", "BUILD.bazel", "LICENSE",
             "MODULE.bazel", "README.md", "SECURITY.md", "component.yaml", "flake.lock", "flake.nix", "justfile",
-            ".github/CODEOWNERS", ".github/dependabot.yml", ".github/pull_request_template.md",
+            ".github/CODEOWNERS", ".github/actionlint.yaml", ".github/dependabot.yml",
+            ".github/pull_request_template.md",
             ".github/workflows/pull-request.yml", ".github/workflows/drift-detection.yml",
             ".github/workflows/protected-apply.yml",
             "config/organization.yaml", "config/actions-policy.yaml", "config/security-policy.yaml",
@@ -744,6 +745,8 @@ class CatalogSchemaTest(unittest.TestCase):
                 path = Path(directory) / name
                 relative = path.relative_to(ROOT).as_posix()
                 if name == ".DS_Store" or name.endswith((".pyc", ".pyo")):
+                    continue
+                if relative_directory == Path(".") and name.startswith("bazel-") and path.is_symlink():
                     continue
                 if path.is_symlink():
                     source_symlinks.append(relative)
