@@ -1631,6 +1631,15 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             verified = invoke("verify-evidence", "--input", str(output))
             self.assertEqual(verified.returncode, 0, verified.stderr)
+            evidence_link = directory / "evidence-link.json"
+            try:
+                evidence_link.symlink_to(output)
+            except OSError:
+                evidence_link = None
+            if evidence_link is not None:
+                rejected_link = invoke("verify-evidence", "--input", str(evidence_link))
+                self.assertNotEqual(rejected_link.returncode, 0)
+                self.assertIn("non-symlink", rejected_link.stderr)
 
             private_key = directory / "evidence-private.pem"
             public_key = directory / "evidence-public.pem"

@@ -4026,17 +4026,53 @@ func readRegularFile(path string) ([]byte, error) {
 	if path == "" {
 		return nil, errors.New("path is required")
 	}
-	info, err := os.Lstat(path)
+	pathInfo, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() {
+	if !pathInfo.Mode().IsRegular() || pathInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("input must be a regular, non-symlink file")
 	}
-	if info.Size() > maxEvidenceInputBytes {
+	if pathInfo.Size() > maxEvidenceInputBytes {
 		return nil, fmt.Errorf("input exceeds %d bytes", maxEvidenceInputBytes)
 	}
-	return os.ReadFile(path)
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return nil, errors.New("input path changed before it could be read")
+	}
+	if openedInfo.Size() > maxEvidenceInputBytes {
+		return nil, fmt.Errorf("input exceeds %d bytes", maxEvidenceInputBytes)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, maxEvidenceInputBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxEvidenceInputBytes {
+		return nil, fmt.Errorf("input exceeds %d bytes", maxEvidenceInputBytes)
+	}
+	postReadInfo, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	finalPathInfo, err := os.Lstat(path)
+	if err != nil {
+		return nil, errors.New("input path changed while it was read")
+	}
+	if !finalPathInfo.Mode().IsRegular() || finalPathInfo.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(openedInfo, postReadInfo) || !os.SameFile(openedInfo, finalPathInfo) ||
+		openedInfo.Size() != postReadInfo.Size() || openedInfo.ModTime() != postReadInfo.ModTime() ||
+		int64(len(data)) != openedInfo.Size() {
+		return nil, errors.New("input changed while it was read")
+	}
+	return data, nil
 }
 
 func containsSensitive(value any) bool {

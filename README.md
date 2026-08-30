@@ -233,7 +233,8 @@ Required non-secret variables are:
   `bootstrap-signing/github-config-plan-evidence` cryptoKeyVersion),
   `GHCFG_PLAN_EVIDENCE_KMS_ALGORITHM=EC_SIGN_P256_SHA256`,
   `GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64`, and
-  `GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_DIGEST`;
+  `GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_DIGEST` (`sha256:` plus bootstrap's SHA-256
+  over the exact UTF-8 public-key PEM bytes);
 - `GHCFG_PLAN_EVIDENCE_KEY_QUALIFIED_SOURCE_SHA`,
   `GHCFG_PLAN_EVIDENCE_KEY_QUALIFICATION_EVIDENCE_DIGEST`, and
   `GHCFG_PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH` from bootstrap's
@@ -413,7 +414,8 @@ variable or live observation can make this repository production authority.
 Cross-run observation checkpoints are not accepted as authority: GitHub
 exposes no organization-wide consistent-read snapshot, so resuming a partially
 cached graph could combine incompatible points in time. Reads instead use
-bounded exponential backoff with jitter and `Retry-After`; a failed or partial
+bounded exponential backoff with per-client randomized jitter and
+`Retry-After`; a failed or partial
 observation is recorded non-authoritatively and the next run starts a fresh
 full observation before re-planning.
 

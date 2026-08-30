@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
+	"hash/maphash"
 	"io"
 	"net/http"
 	"net/url"
@@ -434,7 +434,8 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 				return http.ErrUseLastResponse
 			},
 		},
-		clock: realRetryClock{},
+		clock:      realRetryClock{},
+		jitterSeed: maphash.MakeSeed(),
 	}
 	// Integration tests inject an advancing clock only for the already-bounded
 	// HTTP loopback test transport. The production GitHub endpoint always uses
@@ -838,10 +839,11 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 }
 
 type githubClient struct {
-	base  string
-	token string
-	http  *http.Client
-	clock retryClock
+	base       string
+	token      string
+	http       *http.Client
+	clock      retryClock
+	jitterSeed maphash.Seed
 }
 
 type retryClock interface {
@@ -1076,7 +1078,7 @@ func (client *githubClient) doRead(ctx context.Context, path string) (*http.Resp
 		}
 
 		now := client.clock.now()
-		delay := retryDelay(path, attempt, response, now)
+		delay := retryDelay(path, attempt, response, now, client.jitterSeed)
 		if now.Add(delay).After(deadline) {
 			if response != nil {
 				return response, nil
@@ -1110,15 +1112,15 @@ func retryableReadResponse(response *http.Response) bool {
 	}
 }
 
-func retryDelay(path string, attempt int, response *http.Response, now time.Time) time.Duration {
+func retryDelay(path string, attempt int, response *http.Response, now time.Time, jitterSeed maphash.Seed) time.Duration {
 	backoff := readRetryBase << (attempt - 1)
 	if backoff > readRetryMaximum {
 		backoff = readRetryMaximum
 	}
-	hasher := fnv.New64a()
-	_, _ = hasher.Write([]byte(path + ":" + strconv.Itoa(attempt)))
 	jitterWindow := backoff / 2
-	jitter := time.Duration(hasher.Sum64() % uint64(jitterWindow+1))
+	jitter := time.Duration(
+		maphash.String(jitterSeed, path+":"+strconv.Itoa(attempt)) % uint64(jitterWindow+1),
+	)
 	delay := backoff + jitter
 	if response != nil {
 		if instructed, ok := retryAfterDelay(response.Header, now); ok && instructed > delay {
