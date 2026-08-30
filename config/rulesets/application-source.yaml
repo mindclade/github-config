@@ -28,5 +28,5 @@ spec:
       checks:
         - context: Pull request / required
           issuer_type: github_actions
-          workflow_path: .github/workflows/pull-request.yml
+          workflow_path: .github/workflows/required-check.yml
           triggers: [pull_request, merge_group]

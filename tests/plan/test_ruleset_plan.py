@@ -54,6 +54,21 @@ class RulesetPlanTest(unittest.TestCase):
             else:
                 self.assertTrue(rules["update"], name)
 
+        application = catalog["rulesets"]["application-source"]
+        self.assertEqual(application["bypass_actors"], [])
+        self.assertEqual(
+            application["rules"]["pull_request"]["required_approving_review_count"], 2,
+        )
+        self.assertEqual(
+            application["rules"]["required_status_checks"]["checks"],
+            [{
+                "context": "Pull request / required",
+                "issuer_type": "github_actions",
+                "workflow_path": ".github/workflows/required-check.yml",
+                "triggers": ["pull_request", "merge_group"],
+            }],
+        )
+
         deployment = catalog["rulesets"]["deployment-source"]
         self.assertEqual(deployment["repositories"], ["gitops"])
         self.assertEqual(
