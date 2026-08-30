@@ -21,6 +21,18 @@ provider/external controls. Clearing repository variables is not activation;
 approved source-contract changes and fresh connected evidence are both
 required before the enforce graph can become reachable.
 
+The repository-local `flake.nix` and `flake.lock` are the sole system-toolchain
+authority for supported `aarch64-darwin` and `x86_64-linux` hosts. The flake
+exposes the reviewed toolchain package, identical default/CI shell closures,
+formatter, and toolchain/source checks while preserving Go modules, OpenTofu
+provider locks, and Bazel as their native dependency authorities:
+
+```bash
+nix build --no-update-lock-file .#toolchain
+nix flake check --no-update-lock-file
+nix develop --no-update-lock-file .#ci --command just ci
+```
+
 ## Authority boundary
 
 This repository owns organization settings, repositories, teams and access,

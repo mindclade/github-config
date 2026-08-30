@@ -17,8 +17,8 @@ spec:
     public_fork_pull_requests: false
   authority_inventories:
     - repository: .github
-      revision: 6399abc50c4678d0dff7f33bbd7f6868043ef736
-      implementation_revision: defb8afbaac17ed6bb9d3959d185ec9000bd2184
+      revision: bd4a19cdae7a0bc97ff088669db267e7ac929c3d
+      implementation_revision: 8d3059d5e14e5f7af861ad190e329fa4dac27dfc
       workflows:
         - reusable-buildkite-dispatch.yml
         - reusable-required-check.yml
@@ -31,7 +31,7 @@ spec:
       activation:
         state: reviewed
     - repository: bootstrap
-      revision: 620d17fcd589cdeb8cef7c292f47e2b7be3b4987
+      revision: 19e8559a4cad34b6338a779a6e6ef18343ebf1d7
       workflows: [pull-request.yml, recovery-verification.yml, protected-apply.yml]
       activation:
         state: reviewed
@@ -73,6 +73,8 @@ spec:
       commit: 5fda3b95a4ea91299a34e894583c3862153e4b97
     - source: bazel-contrib/setup-bazel
       commit: c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
+    - source: DeterminateSystems/nix-installer-action
+      commit: ef8a148080ab6020fd15196c2084a2eea5ff2d25
     - source: actions/upload-artifact
       commit: 043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
     - source: actions/download-artifact

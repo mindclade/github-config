@@ -433,7 +433,7 @@ class CatalogSchemaTest(unittest.TestCase):
     def test_repository_tree_matches_blueprint_inventory_exactly(self):
         expected = {
             ".editorconfig", ".gitignore", "BUILD.bazel", "LICENSE",
-            "MODULE.bazel", "README.md", "SECURITY.md", "component.yaml", "justfile",
+            "MODULE.bazel", "README.md", "SECURITY.md", "component.yaml", "flake.lock", "flake.nix", "justfile",
             ".github/CODEOWNERS", ".github/dependabot.yml", ".github/pull_request_template.md",
             ".github/workflows/pull-request.yml", ".github/workflows/drift-detection.yml",
             ".github/workflows/protected-apply.yml",

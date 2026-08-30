@@ -99,6 +99,10 @@ class PermissionReductionTest(unittest.TestCase):
                          "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e")
         self.assertEqual(allowed_pins["actions/setup-python"],
                          "5fda3b95a4ea91299a34e894583c3862153e4b97")
+        self.assertEqual(allowed_pins["bazel-contrib/setup-bazel"],
+                         "c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86")
+        self.assertEqual(allowed_pins["DeterminateSystems/nix-installer-action"],
+                         "ef8a148080ab6020fd15196c2084a2eea5ff2d25")
 
         subjects = {
             subject["id"]: subject
