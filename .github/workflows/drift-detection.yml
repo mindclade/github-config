@@ -2,7 +2,9 @@ name: Drift detection
 
 on:
   schedule:
-    - cron: "23 6 * * *"
+    # Full observation is intentionally hourly; this exceeds the critical-hourly
+    # and full-daily minimum without creating a second source of drift truth.
+    - cron: "23 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -338,6 +340,72 @@ jobs:
             echo "WIF_QUALIFICATION_EVIDENCE_DIGEST=$WIF_QUALIFICATION_EVIDENCE_DIGEST"
           } >> "$GITHUB_ENV"
 
+      - name: Fetch and validate exact canonical workflow authorities
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          authority_root="$RUNNER_TEMP/canonical-workflow-authorities"
+          test ! -e "$authority_root"
+          install -d -m 0700 "$authority_root"
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            compile --root "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/authority-catalog.json"
+          while IFS=$'\t' read -r repository revision implementation_revision state; do
+            if [[ "$state" != "reviewed" ]]; then
+              continue
+            fi
+            [[ "$repository" =~ ^(\.github|bootstrap|infrastructure-live|gitops|mindclade)$ ]]
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+            if [[ "$repository" == ".github" ]]; then
+              [[ "$implementation_revision" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$implementation_revision" != "$revision" ]]
+            else
+              [[ "$implementation_revision" == "-" ]]
+            fi
+            destination="$authority_root/$repository"
+            gh repo clone "mindclade/$repository" "$destination" -- \
+              --filter=blob:none --no-checkout
+            git -C "$destination" fetch --no-tags origin \
+              "+refs/heads/main:refs/remotes/origin/main"
+            git -C "$destination" fetch --no-tags origin "$revision"
+            git -C "$destination" merge-base --is-ancestor \
+              "$revision" refs/remotes/origin/main
+            if [[ "$implementation_revision" != "-" ]]; then
+              git -C "$destination" fetch --no-tags origin "$implementation_revision"
+              git -C "$destination" merge-base --is-ancestor \
+                "$implementation_revision" "$revision"
+              implementation_destination="$authority_root/.github-implementation"
+              test ! -e "$implementation_destination"
+              gh repo clone "mindclade/$repository" "$implementation_destination" -- \
+                --filter=blob:none --no-checkout
+              git -C "$implementation_destination" fetch --no-tags origin \
+                "+refs/heads/main:refs/remotes/origin/main"
+              git -C "$implementation_destination" fetch --no-tags origin \
+                "$implementation_revision"
+              git -C "$implementation_destination" merge-base --is-ancestor \
+                "$implementation_revision" refs/remotes/origin/main
+              git -C "$implementation_destination" checkout --detach "$implementation_revision"
+              test "$(git -C "$implementation_destination" rev-parse HEAD)" = "$implementation_revision"
+            fi
+            git -C "$destination" checkout --detach "$revision"
+            test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
+          done < <(
+            jq -r '.actions_policy.authority_inventories[]
+              | [.repository, .revision, (.implementation_revision // "-"), .activation.state] | @tsv' \
+              "$RUNNER_TEMP/authority-catalog.json"
+          )
+          export MINDCLADE_AUTHORITY_ROOT="$authority_root"
+          export MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES=1
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            validate --root "$GITHUB_WORKSPACE" > /dev/null
+          {
+            echo "MINDCLADE_AUTHORITY_ROOT=$authority_root"
+            echo "MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES=1"
+          } >> "$GITHUB_ENV"
+
       - name: Compile and observe desired state
         id: observe
         env:
@@ -402,10 +470,12 @@ jobs:
                 adopted_organization_custom_properties: ($preflight[0].adopted_organization_custom_properties // {}),
                 adopted_organization_oidc_templates: ($preflight[0].adopted_organization_oidc_templates // {}),
                 adopted_outside_collaborator_grants: ($preflight[0].adopted_outside_collaborator_grants // {}),
+                adopted_repository_actions_access_levels: ($preflight[0].adopted_repository_actions_access_levels // {}),
                 adopted_repository_custom_properties: ($preflight[0].adopted_repository_custom_properties // {}),
                 adopted_repository_names: ($preflight[0].adopted_repository_names // {}),
                 adopted_repository_oidc_templates: ($preflight[0].adopted_repository_oidc_templates // {}),
                 adopted_ruleset_ids: ($preflight[0].adopted_ruleset_ids // {}),
+                adopted_ruleset_enforcements: ($preflight[0].adopted_ruleset_enforcements // {}),
                 adopted_security_manager_assignments: ($preflight[0].adopted_security_manager_assignments // {}),
                 adopted_team_ids: ($preflight[0].adopted_team_ids // {}),
                 adopted_team_memberships: ($preflight[0].adopted_team_memberships // {}),

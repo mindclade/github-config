@@ -38,6 +38,88 @@
         }
       }
     },
+    "customPropertyMigration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "legacy_allowed_values"],
+      "properties": {
+        "phase": {"enum": ["preserve", "retire"]},
+        "legacy_allowed_values": {
+          "type": "object",
+          "propertyNames": {"pattern": "^[a-z][a-z0-9_]{1,62}$"},
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "minLength": 1, "maxLength": 75}
+          }
+        }
+      }
+    },
+    "installationDisposition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["app_slug", "app_id", "installation_id", "disposition", "integration_id", "integration_evidence_digest"],
+          "properties": {
+            "app_slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,99}$"},
+            "app_id": {"type": "integer", "minimum": 1},
+            "installation_id": {"type": "integer", "minimum": 1},
+            "disposition": {"const": "catalog"},
+            "integration_id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+            "integration_evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["app_slug", "app_id", "installation_id", "disposition", "reason"],
+          "properties": {
+            "app_slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,99}$"},
+            "app_id": {"type": "integer", "minimum": 1},
+            "installation_id": {"type": "integer", "minimum": 1},
+            "disposition": {"enum": ["approved_external", "retirement_pending"]},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 500}
+          }
+        }
+      ]
+    },
+    "installationInventoryQualification": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "authority", "blockers"],
+          "properties": {
+            "state": {"const": "blocked"},
+            "authority": {"const": "bootstrap"},
+            "blockers": {
+              "type": "array", "minItems": 1, "uniqueItems": true,
+              "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "authority", "source_sha", "workflow_ref", "created_at", "expires_at", "installations", "evidence_digest"],
+          "properties": {
+            "state": {"const": "qualified"},
+            "authority": {"const": "bootstrap"},
+            "source_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "workflow_ref": {"type": "string", "pattern": "^mindclade/bootstrap/\\.github/workflows/protected-apply\\.yml@[0-9a-f]{40}$"},
+            "created_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+            "expires_at": {"type": "string", "format": "date-time", "pattern": "Z$"},
+            "installations": {
+              "type": "array", "uniqueItems": true,
+              "items": {"$ref": "#/$defs/installationDisposition"}
+            },
+            "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          }
+        }
+      ]
+    },
     "spec": {
       "type": "object",
       "additionalProperties": false,
@@ -52,7 +134,9 @@
         "members_can_fork_private_repositories",
         "web_commit_signoff_required",
         "two_factor_requirement",
-        "custom_properties"
+        "installation_inventory_qualification",
+        "custom_properties",
+        "custom_property_migration"
       ],
       "properties": {
         "organization_login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
@@ -65,6 +149,8 @@
         "members_can_fork_private_repositories": {"type": "boolean"},
         "web_commit_signoff_required": {"type": "boolean"},
         "two_factor_requirement": {"type": "boolean"},
+        "installation_inventory_qualification": {"$ref": "#/$defs/installationInventoryQualification"},
+        "custom_property_migration": {"$ref": "#/$defs/customPropertyMigration"},
         "custom_properties": {
           "type": "array",
           "minItems": 8,

@@ -1,57 +1,108 @@
 package github_config.workflow_sources_test
 
-import rego.v1
 import data.github_config.workflow_sources
+import rego.v1
 
 download_artifact_sha := "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+codeql_sha := "cdf488f595d80d6e07e03d4674febd5ab45fa938"
 
 test_download_artifact_commit_allowed if {
-    denials := workflow_sources.deny with input as {
-        "actions_policy": {"spec": {
-            "github_owned_allowed": false,
-            "verified_creator_allowed": false,
-            "allowed_actions": [{"source": "actions/download-artifact", "commit": download_artifact_sha}],
-        }},
-        "workflows": [{
-            "name": "Protected apply",
-            "events": ["workflow_dispatch"],
-            "uses": [sprintf("actions/download-artifact@%s", [download_artifact_sha])],
-        }],
-    }
-    count(denials) == 0
+	denials := workflow_sources.deny with input as {
+		"actions_policy": {"spec": {
+			"github_owned_allowed": false,
+			"verified_creator_allowed": false,
+			"allowed_actions": [{"source": "actions/download-artifact", "commit": download_artifact_sha}],
+		}},
+		"workflows": [{
+			"name": "Protected apply",
+			"events": ["workflow_dispatch"],
+			"uses": [sprintf("actions/download-artifact@%s", [download_artifact_sha])],
+		}],
+	}
+	count(denials) == 0
+}
+
+test_catalog_pin_allows_action_subpath if {
+	denials := workflow_sources.deny with input as {
+		"actions_policy": {"spec": {
+			"github_owned_allowed": false,
+			"verified_creator_allowed": false,
+			"allowed_actions": [{"source": "github/codeql-action", "commit": codeql_sha}],
+		}},
+		"workflows": [{
+			"name": "CodeQL",
+			"events": ["pull_request"],
+			"uses": [sprintf("github/codeql-action/init@%s", [codeql_sha])],
+		}],
+	}
+	count(denials) == 0
+}
+
+test_action_subpath_requires_exact_catalog_pin if {
+	denials := workflow_sources.deny with input as {
+		"actions_policy": {"spec": {
+			"github_owned_allowed": false,
+			"verified_creator_allowed": false,
+			"allowed_actions": [{"source": "github/codeql-action", "commit": codeql_sha}],
+		}},
+		"workflows": [{
+			"name": "CodeQL",
+			"events": ["pull_request"],
+			"uses": ["github/codeql-action/init@0000000000000000000000000000000000000000"],
+		}],
+	}
+	some message in denials
+	contains(message, "unapproved source")
+}
+
+test_action_subpath_rejects_path_traversal if {
+	denials := workflow_sources.deny with input as {
+		"actions_policy": {"spec": {
+			"github_owned_allowed": false,
+			"verified_creator_allowed": false,
+			"allowed_actions": [{"source": "github/codeql-action", "commit": codeql_sha}],
+		}},
+		"workflows": [{
+			"name": "CodeQL",
+			"events": ["pull_request"],
+			"uses": [sprintf("github/codeql-action/../unreviewed@%s", [codeql_sha])],
+		}],
+	}
+	some message in denials
+	contains(message, "unapproved source")
 }
 
 test_mutable_action_tag_denied if {
-    denials := workflow_sources.deny with input as {
-        "actions_policy": {"spec": {
-            "github_owned_allowed": false,
-            "verified_creator_allowed": false,
-            "allowed_actions": [{"source": "actions/checkout", "commit": "3d3c42e5aac5ba805825da76410c181273ba90b1"}],
-        }},
-        "workflows": [{"name": "Pull request", "events": ["pull_request"], "uses": ["actions/checkout@v7"]}],
-    }
-    some message in denials
-    contains(message, "unapproved source")
+	denials := workflow_sources.deny with input as {
+		"actions_policy": {"spec": {
+			"github_owned_allowed": false,
+			"verified_creator_allowed": false,
+			"allowed_actions": [{"source": "actions/checkout", "commit": "3d3c42e5aac5ba805825da76410c181273ba90b1"}],
+		}},
+		"workflows": [{"name": "Pull request", "events": ["pull_request"], "uses": ["actions/checkout@v7"]}],
+	}
+	some message in denials
+	contains(message, "unapproved source")
 }
 
 test_unpinned_reusable_workflow_denied if {
-    denials := workflow_sources.deny with input as {
-        "actions_policy": {"spec": {"github_owned_allowed": false, "verified_creator_allowed": false, "allowed_actions": []}},
-        "workflows": [{
-            "name": "Required",
-            "events": ["pull_request"],
-            "uses": ["mindclade/.github/.github/workflows/reusable-required-check.yml@main"],
-        }],
-    }
-    some message in denials
-    contains(message, "unapproved source")
+	denials := workflow_sources.deny with input as {
+		"actions_policy": {"spec": {"github_owned_allowed": false, "verified_creator_allowed": false, "allowed_actions": []}},
+		"workflows": [{
+			"name": "Required",
+			"events": ["pull_request"],
+			"uses": ["mindclade/.github/.github/workflows/reusable-required-check.yml@main"],
+		}],
+	}
+	some message in denials
+	contains(message, "unapproved source")
 }
 
 test_pull_request_target_denied if {
-    denials := workflow_sources.deny with input as {
-        "actions_policy": {"spec": {"github_owned_allowed": false, "verified_creator_allowed": false, "allowed_actions": []}},
-        "workflows": [{"name": "Unsafe", "events": ["pull_request_target"], "uses": ["./.github/actions/local"]}],
-    }
-    some message in denials
-    contains(message, "pull_request_target")
+	denials := workflow_sources.deny with input as {
+		"actions_policy": {"spec": {"github_owned_allowed": false, "verified_creator_allowed": false, "allowed_actions": []}},
+		"workflows": [{"name": "Unsafe", "events": ["pull_request_target"], "uses": ["./.github/actions/local"]}],
+	}
+	some message in denials
+	contains(message, "pull_request_target")
 }

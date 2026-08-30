@@ -3,11 +3,6 @@ output "ruleset_ids" {
   value       = { for key, ruleset in github_organization_ruleset.this : key => ruleset.ruleset_id }
 }
 
-output "repository_gate_ids" {
-  description = "Numeric repository-ruleset IDs keyed by authority-gate catalog identifier."
-  value       = { for key, ruleset in github_repository_ruleset.gate : key => ruleset.ruleset_id }
-}
-
 output "effective_enforcement" {
   description = "Effective ruleset mode after applying the protected rollout phase."
   value       = { for key, ruleset in local.rulesets : key => ruleset.effective_enforcement }
@@ -92,34 +87,9 @@ output "deployment_preflight" {
   }
 }
 
-output "repository_gate_preflight" {
-  description = "Repository authority-gate controls and their connected qualification state."
-  value = {
-    for key, gate in local.repository_gates : key => {
-      required_deployments = {
-        managed = true
-        desired = gate.environment_names
-      }
-      status_check_issuers = {
-        managed = alltrue([
-          for check in gate.required_status_checks.checks :
-          check.integration_id != null || contains(keys(var.qualified_status_check_integration_ids), check.issuer_type)
-        ])
-        desired = gate.required_status_checks.checks
-      }
-      bypass_actors = {
-        managed = length(gate.bypass_actors) == 0
-        desired = gate.bypass_actors
-      }
-      effective_enforcement = gate.effective_enforcement
-    }
-  }
-}
-
 output "managed_resource_ids" {
   description = "Non-sensitive ruleset resource identifiers for evidence."
   value = {
-    organization     = { for key, ruleset in github_organization_ruleset.this : key => ruleset.id }
-    repository_gates = { for key, ruleset in github_repository_ruleset.gate : key => ruleset.id }
+    organization = { for key, ruleset in github_organization_ruleset.this : key => ruleset.id }
   }
 }

@@ -15,9 +15,62 @@ spec:
     github_hosted: true
     self_hosted: false
     public_fork_pull_requests: false
+  authority_inventories:
+    - repository: .github
+      revision: 6399abc50c4678d0dff7f33bbd7f6868043ef736
+      implementation_revision: defb8afbaac17ed6bb9d3959d185ec9000bd2184
+      workflows:
+        - reusable-buildkite-dispatch.yml
+        - reusable-required-check.yml
+        - reusable-metadata-validation.yml
+        - reusable-documentation-check.yml
+        - reusable-dependency-review.yml
+        - reusable-codeql.yml
+        - reusable-scorecard.yml
+        - self-test.yml
+      activation:
+        state: reviewed
+    - repository: bootstrap
+      revision: 5bfb75fdcf912e0b8991aa8d2366562117313e67
+      workflows: [pull-request.yml, recovery-verification.yml, protected-apply.yml]
+      activation:
+        state: reviewed
+    - repository: infrastructure-live
+      revision: 343c93cbee9c769d8b7c808ad535ccfa1969d0c4
+      workflows: [pull-request.yml, drift-detection.yml, protected-apply.yml, disaster-recovery.yml]
+      activation:
+        state: reviewed
+    - repository: gitops
+      revision: ""
+      workflows: [pull-request.yml, promotion.yml, drift-detection.yml, rollback-verification.yml]
+      activation:
+        state: blocked
+        blockers: [gitops-authority-action-pin-parity-pending]
+    - repository: mindclade
+      revision: ""
+      workflows:
+        - pr-metadata.yml
+        - buildkite-dispatch.yml
+        - required-check.yml
+        - docs.yml
+        - dependency-review.yml
+        - codeql.yml
+        - scorecard.yml
+        - mirror-verification.yml
+      activation:
+        state: blocked
+        blockers: [product-repository-activation-not-complete]
   allowed_actions:
     - source: actions/checkout
       commit: 3d3c42e5aac5ba805825da76410c181273ba90b1
+    - source: actions/dependency-review-action
+      commit: a1d282b36b6f3519aa1f3fc636f609c47dddb294
+    - source: actions/attest-build-provenance
+      commit: 4d101475d8b20a2381f78447822ac1eab6504dd8
+    - source: actions/setup-go
+      commit: b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+    - source: actions/setup-python
+      commit: 5fda3b95a4ea91299a34e894583c3862153e4b97
     - source: bazel-contrib/setup-bazel
       commit: c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86
     - source: actions/upload-artifact
@@ -26,9 +79,13 @@ spec:
       commit: 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
     - source: google-github-actions/auth
       commit: 7c6bc770dae815cd3e89ee6cdf493a5fab2cc093
+    - source: google-github-actions/setup-gcloud
+      commit: aa5489c8933f4cc7a4f7d45035b3b1440c9c10db
     - source: google-github-actions/get-secretmanager-secrets
       commit: bc9c54b29fdffb8a47776820a7d26e77b379d262
     - source: actions/create-github-app-token
       commit: bcd2ba49218906704ab6c1aa796996da409d3eb1
     - source: opentofu/setup-opentofu
       commit: a1320f892987e89d278cc92dc5adc984fb93aca4
+    - source: github/codeql-action
+      commit: cdf488f595d80d6e07e03d4674febd5ab45fa938

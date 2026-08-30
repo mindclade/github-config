@@ -34,7 +34,6 @@ type Catalog struct {
 	Teams                map[string]any `json:"teams"`
 	Repositories         map[string]any `json:"repositories"`
 	Rulesets             map[string]any `json:"rulesets"`
-	RepositoryGates      map[string]any `json:"repository_gates"`
 	Environments         map[string]any `json:"environments"`
 	Integrations         map[string]any `json:"integrations"`
 	SourceDigest         string         `json:"source_digest,omitempty"`
@@ -75,13 +74,10 @@ var sourceDefinitions = []sourceDefinition{
 	{"config/rulesets/infrastructure-source.yaml", "ruleset.schema.json", "Ruleset", "rulesets"},
 	{"config/rulesets/deployment-source.yaml", "ruleset.schema.json", "Ruleset", "rulesets"},
 	{"config/rulesets/release-tags.yaml", "ruleset.schema.json", "Ruleset", "rulesets"},
-	{"config/repository-gates/infrastructure-live-authorities.yaml", "repository_gate.schema.json", "RepositoryGate", "repository_gates"},
 	{"config/environments/trusted-build.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/environments/release-signing.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/environments/infrastructure-apply.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/environments/production-promotion.yaml", "environment.schema.json", "Environment", "environments"},
-	{"config/environments/infrastructure-source-review.yaml", "environment.schema.json", "Environment", "environments"},
-	{"config/environments/security-source-review.yaml", "environment.schema.json", "Environment", "environments"},
 	{"config/integrations/buildkite.yaml", "integration.schema.json", "Integration", "integrations"},
 	{"config/integrations/artifact-signing.yaml", "integration.schema.json", "Integration", "integrations"},
 	{"config/integrations/gitops-controller.yaml", "integration.schema.json", "Integration", "integrations"},
@@ -95,10 +91,48 @@ var schemaFiles = []string{
 	"oidc_policy.schema.json",
 	"organization.schema.json",
 	"repository.schema.json",
-	"repository_gate.schema.json",
 	"ruleset.schema.json",
 	"security_policy.schema.json",
 	"team.schema.json",
+}
+
+// canonicalWorkflowInventories are the closed operational workflow surfaces
+// whose external Action pins are governed by config/actions-policy.yaml.
+var canonicalWorkflowInventories = map[string][]string{
+	"github-config": {
+		"drift-detection.yml", "protected-apply.yml", "pull-request.yml",
+	},
+	".github": {
+		"reusable-buildkite-dispatch.yml", "reusable-required-check.yml",
+		"reusable-metadata-validation.yml", "reusable-documentation-check.yml",
+		"reusable-dependency-review.yml", "reusable-codeql.yml",
+		"reusable-scorecard.yml", "self-test.yml",
+	},
+	"bootstrap": {
+		"pull-request.yml", "recovery-verification.yml", "protected-apply.yml",
+	},
+	"infrastructure-live": {
+		"pull-request.yml", "drift-detection.yml", "protected-apply.yml",
+		"disaster-recovery.yml",
+	},
+	"gitops": {
+		"pull-request.yml", "promotion.yml", "drift-detection.yml", "rollback-verification.yml",
+	},
+	"mindclade": {
+		"pr-metadata.yml", "buildkite-dispatch.yml", "required-check.yml", "docs.yml",
+		"dependency-review.yml", "codeql.yml", "scorecard.yml", "mirror-verification.yml",
+	},
+}
+
+// canonicalWorkflowTemplateInventories are reviewed catalog interfaces whose
+// immutable reusable-workflow implementation pin can differ from the catalog
+// commit that publishes the templates. This is necessary because a catalog
+// commit cannot recursively pin its own reusable workflows to itself.
+var canonicalWorkflowTemplateInventories = map[string][]string{
+	".github": {
+		"workflow-templates/buildkite-bridge.yml",
+		"workflow-templates/repository-metadata.yml",
+	},
 }
 
 // Compile reads the exact blueprint inventory and returns a flattened catalog.
@@ -113,7 +147,6 @@ func Compile(root string) (*Catalog, error) {
 		Teams:                make(map[string]any),
 		Repositories:         make(map[string]any),
 		Rulesets:             make(map[string]any),
-		RepositoryGates:      make(map[string]any),
 		Environments:         make(map[string]any),
 		Integrations:         make(map[string]any),
 		Members:              []any{},
@@ -161,8 +194,6 @@ func Compile(root string) (*Catalog, error) {
 			result.Repositories[document.ID] = document.Spec
 		case "rulesets":
 			result.Rulesets[document.ID] = document.Spec
-		case "repository_gates":
-			result.RepositoryGates[document.ID] = document.Spec
 		case "environments":
 			result.Environments[document.ID] = document.Spec
 		case "integrations":
@@ -190,6 +221,9 @@ func validatedDocuments(root string) (string, []*validation.Document, error) {
 	if err := validateInventory(absoluteRoot); err != nil {
 		return "", nil, err
 	}
+	if err := validateComponentMetadata(absoluteRoot); err != nil {
+		return "", nil, fmt.Errorf("component.yaml: %w", err)
+	}
 	documents := make([]*validation.Document, 0, len(sourceDefinitions))
 	for _, definition := range sourceDefinitions {
 		document, err := loadDocument(absoluteRoot, definition)
@@ -201,7 +235,414 @@ func validatedDocuments(root string) (string, []*validation.Document, error) {
 	if err := validation.ValidateCatalog(documents); err != nil {
 		return "", nil, fmt.Errorf("cross-document validation: %w", err)
 	}
+	if err := validation.ValidateCodeowners(absoluteRoot, documents, "github-config"); err != nil {
+		return "", nil, fmt.Errorf("CODEOWNERS validation: %w", err)
+	}
+	if err := validateCanonicalWorkflowPins(absoluteRoot, documents); err != nil {
+		return "", nil, fmt.Errorf("canonical workflow pin validation: %w", err)
+	}
 	return absoluteRoot, documents, nil
+}
+
+func validateCanonicalWorkflowPins(root string, documents []*validation.Document) error {
+	allowedPins := make(map[string]string)
+	authorities := make(map[string]map[string]any)
+	for _, document := range documents {
+		if document.Kind != "ActionsPolicy" {
+			continue
+		}
+		spec, _ := document.Spec.(map[string]any)
+		rawActions, _ := spec["allowed_actions"].([]any)
+		for _, raw := range rawActions {
+			action, _ := raw.(map[string]any)
+			source, _ := action["source"].(string)
+			commit, _ := action["commit"].(string)
+			if source == "" || commit == "" {
+				continue
+			}
+			allowedPins[source] = commit
+		}
+		for _, raw := range anyList(spec["authority_inventories"]) {
+			authority, _ := raw.(map[string]any)
+			repository, _ := authority["repository"].(string)
+			if repository == "" {
+				continue
+			}
+			if _, duplicate := authorities[repository]; duplicate {
+				return fmt.Errorf("duplicate canonical workflow authority %q", repository)
+			}
+			authorities[repository] = authority
+		}
+	}
+	if len(allowedPins) == 0 {
+		return errors.New("ActionsPolicy must declare exact allowed action pins")
+	}
+
+	for repositoryName, expectedWorkflows := range canonicalWorkflowInventories {
+		if repositoryName == "github-config" {
+			continue
+		}
+		authority, exists := authorities[repositoryName]
+		if !exists {
+			return fmt.Errorf("canonical workflow authority %q is undeclared", repositoryName)
+		}
+		actualWorkflows := stringListValue(authority["workflows"])
+		sort.Strings(actualWorkflows)
+		expected := append([]string(nil), expectedWorkflows...)
+		sort.Strings(expected)
+		if strings.Join(actualWorkflows, "\x00") != strings.Join(expected, "\x00") {
+			return fmt.Errorf("canonical workflow authority %q does not declare the exact workflow inventory", repositoryName)
+		}
+		activation, _ := authority["activation"].(map[string]any)
+		state, _ := activation["state"].(string)
+		revision, _ := authority["revision"].(string)
+		implementationRevision, hasImplementationRevision := authority["implementation_revision"].(string)
+		switch state {
+		case "reviewed":
+			if !isCommitSHA(revision) {
+				return fmt.Errorf("canonical workflow authority %q requires an immutable reviewed revision", repositoryName)
+			}
+		case "blocked":
+			if revision != "" {
+				return fmt.Errorf("blocked canonical workflow authority %q must not claim a reviewed revision", repositoryName)
+			}
+		default:
+			return fmt.Errorf("canonical workflow authority %q has an unsupported activation state", repositoryName)
+		}
+		if repositoryName == ".github" {
+			if !isCommitSHA(implementationRevision) || implementationRevision == revision {
+				return errors.New("canonical .github authority requires distinct immutable catalog and implementation revisions")
+			}
+		} else if hasImplementationRevision {
+			return fmt.Errorf("canonical workflow authority %q must not declare a reusable-workflow implementation revision", repositoryName)
+		}
+	}
+
+	repositoryRoots := map[string]string{"github-config": root}
+	sharedImplementationRoot := ""
+	blockedAuthorities := make([]string, 0)
+	authorityRoot := strings.TrimSpace(os.Getenv("MINDCLADE_AUTHORITY_ROOT"))
+	requireAuthorities := os.Getenv("MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES") == "1"
+	if requireAuthorities && authorityRoot == "" {
+		return errors.New("connected canonical workflow pin qualification requires MINDCLADE_AUTHORITY_ROOT")
+	}
+	if authorityRoot != "" {
+		absoluteAuthorityRoot, err := filepath.Abs(authorityRoot)
+		if err != nil {
+			return fmt.Errorf("resolve canonical workflow authority root: %w", err)
+		}
+		for repositoryName, authority := range authorities {
+			activation, _ := authority["activation"].(map[string]any)
+			if activation["state"] != "reviewed" {
+				blockedAuthorities = append(blockedAuthorities, repositoryName)
+				continue
+			}
+			repositoryRoot := filepath.Join(absoluteAuthorityRoot, repositoryName)
+			revision, _ := authority["revision"].(string)
+			head, err := detachedGitHead(repositoryRoot)
+			if err != nil {
+				return fmt.Errorf("canonical workflow authority %q is unavailable: %w", repositoryName, err)
+			}
+			if head != revision {
+				return fmt.Errorf("canonical workflow authority %q revision %q does not match reviewed revision %q", repositoryName, head, revision)
+			}
+			repositoryRoots[repositoryName] = repositoryRoot
+			if repositoryName == ".github" {
+				implementationRevision, _ := authority["implementation_revision"].(string)
+				implementationRoot := filepath.Join(absoluteAuthorityRoot, ".github-implementation")
+				implementationHead, err := detachedGitHead(implementationRoot)
+				if err != nil {
+					return fmt.Errorf("canonical .github reusable-workflow implementation is unavailable: %w", err)
+				}
+				if implementationHead != implementationRevision {
+					return fmt.Errorf("canonical .github reusable-workflow implementation revision %q does not match reviewed revision %q", implementationHead, implementationRevision)
+				}
+				sharedImplementationRoot = implementationRoot
+			}
+		}
+	}
+
+	repositoryNames := make([]string, 0, len(repositoryRoots))
+	for name := range repositoryRoots {
+		repositoryNames = append(repositoryNames, name)
+	}
+	sort.Strings(repositoryNames)
+	for _, repositoryName := range repositoryNames {
+		repositoryRoot := repositoryRoots[repositoryName]
+		if repositoryName == "github-config" {
+			workflowRoot := filepath.Join(repositoryRoot, ".github", "workflows")
+			info, err := os.Stat(workflowRoot)
+			if errors.Is(err, os.ErrNotExist) {
+				// Catalog-only migration fixtures intentionally omit workflows.
+				// The canonical repository inventory test requires this directory
+				// in a source checkout, where its pins are validated below.
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("inspect github-config workflows: %w", err)
+			}
+			if !info.IsDir() {
+				return errors.New("github-config/.github/workflows is not a directory")
+			}
+		}
+		for _, workflowName := range canonicalWorkflowInventories[repositoryName] {
+			relativePath := filepath.ToSlash(filepath.Join(".github", "workflows", workflowName))
+			value, err := decodeYAML(filepath.Join(repositoryRoot, filepath.FromSlash(relativePath)))
+			if err != nil {
+				return fmt.Errorf("%s/%s: %w", repositoryName, relativePath, err)
+			}
+			workflow, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s/%s: root must be an object", repositoryName, relativePath)
+			}
+			uses := make([]string, 0)
+			collectStringKey(workflow, "uses", &uses)
+			sort.Strings(uses)
+			for _, reference := range uses {
+				if err := validateWorkflowUsePin(reference, allowedPins, authorities[".github"]); err != nil {
+					return fmt.Errorf("%s/%s: %w", repositoryName, relativePath, err)
+				}
+			}
+		}
+		for _, relativePath := range canonicalWorkflowTemplateInventories[repositoryName] {
+			value, err := decodeYAML(filepath.Join(repositoryRoot, filepath.FromSlash(relativePath)))
+			if err != nil {
+				return fmt.Errorf("%s/%s: %w", repositoryName, relativePath, err)
+			}
+			workflow, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s/%s: root must be an object", repositoryName, relativePath)
+			}
+			uses := make([]string, 0)
+			collectStringKey(workflow, "uses", &uses)
+			if len(uses) == 0 {
+				return fmt.Errorf("%s/%s: canonical workflow template must call a reviewed reusable workflow", repositoryName, relativePath)
+			}
+			sort.Strings(uses)
+			for _, reference := range uses {
+				if err := validateWorkflowUsePin(reference, allowedPins, authorities[".github"]); err != nil {
+					return fmt.Errorf("%s/%s: %w", repositoryName, relativePath, err)
+				}
+			}
+		}
+	}
+	if sharedImplementationRoot != "" {
+		for _, workflowName := range canonicalWorkflowInventories[".github"] {
+			relativePath := filepath.ToSlash(filepath.Join(".github", "workflows", workflowName))
+			value, err := decodeYAML(filepath.Join(sharedImplementationRoot, filepath.FromSlash(relativePath)))
+			if err != nil {
+				return fmt.Errorf(".github-implementation/%s: %w", relativePath, err)
+			}
+			workflow, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf(".github-implementation/%s: root must be an object", relativePath)
+			}
+			uses := make([]string, 0)
+			collectStringKey(workflow, "uses", &uses)
+			sort.Strings(uses)
+			for _, reference := range uses {
+				if err := validateWorkflowUsePin(reference, allowedPins, authorities[".github"]); err != nil {
+					return fmt.Errorf(".github-implementation/%s: %w", relativePath, err)
+				}
+			}
+		}
+	}
+	if requireAuthorities && len(blockedAuthorities) > 0 {
+		sort.Strings(blockedAuthorities)
+		return fmt.Errorf("canonical workflow authorities are blocked and unavailable for connected qualification: %s", strings.Join(blockedAuthorities, ", "))
+	}
+	return nil
+}
+
+func detachedGitHead(repositoryRoot string) (string, error) {
+	path := filepath.Join(repositoryRoot, ".git", "HEAD")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 256 {
+		return "", errors.New(".git/HEAD must be a small regular non-symlink file")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	head := strings.TrimSpace(string(data))
+	if !isCommitSHA(head) {
+		return "", errors.New("checkout must use a detached immutable commit")
+	}
+	return head, nil
+}
+
+func anyList(value any) []any {
+	items, _ := value.([]any)
+	return items
+}
+
+func stringListValue(value any) []string {
+	result := make([]string, 0)
+	for _, raw := range anyList(value) {
+		text, _ := raw.(string)
+		if text != "" {
+			result = append(result, text)
+		}
+	}
+	return result
+}
+
+func validateWorkflowUsePin(reference string, allowedPins map[string]string, sharedAuthority map[string]any) error {
+	// Repository-local composite actions do not cross the catalog trust
+	// boundary. The $/ prefix is the organization workflow repository's
+	// validated checkout-relative composite-action convention.
+	if strings.HasPrefix(reference, "./") || strings.HasPrefix(reference, "$/") {
+		if strings.Contains(reference, "@") || strings.Contains(reference, "..") ||
+			(strings.HasPrefix(reference, "$/") && !strings.HasPrefix(reference, "$/.github/actions/")) {
+			return fmt.Errorf("local action source %q has an invalid path", reference)
+		}
+		return nil
+	}
+	separator := strings.LastIndex(reference, "@")
+	if separator <= 0 || separator == len(reference)-1 {
+		return fmt.Errorf("external source %q is not pinned to a commit", reference)
+	}
+	sourcePath := reference[:separator]
+	commit := reference[separator+1:]
+	if !isCommitSHA(commit) {
+		return fmt.Errorf("external source %q is not pinned to a 40-character commit", reference)
+	}
+	parts := strings.Split(sourcePath, "/")
+	if !validActionPathParts(parts) || strings.ContainsAny(sourcePath, "*?[]{} ") {
+		return fmt.Errorf("external source %q has an invalid owner/repository path", reference)
+	}
+	if strings.HasPrefix(sourcePath, "mindclade/.github/.github/workflows/") {
+		workflowName := strings.TrimPrefix(sourcePath, "mindclade/.github/.github/workflows/")
+		if strings.Contains(workflowName, "/") || workflowName == "" {
+			return fmt.Errorf("shared workflow source %q has an invalid canonical path", reference)
+		}
+		activation, _ := sharedAuthority["activation"].(map[string]any)
+		catalogRevision, _ := sharedAuthority["revision"].(string)
+		implementationRevision, _ := sharedAuthority["implementation_revision"].(string)
+		if activation["state"] != "reviewed" || !isCommitSHA(catalogRevision) || !isCommitSHA(implementationRevision) {
+			return errors.New("organization .github workflow authority is not reviewed at immutable catalog and implementation revisions")
+		}
+		declared := false
+		for _, expected := range stringListValue(sharedAuthority["workflows"]) {
+			if expected == workflowName {
+				declared = true
+				break
+			}
+		}
+		if !declared {
+			return fmt.Errorf("shared workflow %q is absent from the canonical .github authority inventory", workflowName)
+		}
+		if commit != implementationRevision {
+			return fmt.Errorf("shared workflow %q uses %s, canonical .github implementation authority requires %s", workflowName, commit, implementationRevision)
+		}
+		return nil
+	}
+	source := parts[0] + "/" + parts[1]
+	expected, exists := allowedPins[source]
+	if !exists {
+		return fmt.Errorf("external action %q is absent from config/actions-policy.yaml", source)
+	}
+	if expected != commit {
+		return fmt.Errorf("external action %q uses %s, catalog requires %s", source, commit, expected)
+	}
+	return nil
+}
+
+func validActionPathParts(parts []string) bool {
+	if len(parts) < 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return false
+		}
+		for _, character := range part {
+			if (character < 'a' || character > 'z') &&
+				(character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') &&
+				character != '_' && character != '.' && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isCommitSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, character := range value {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validateComponentMetadata(root string) error {
+	value, err := decodeYAML(filepath.Join(root, "component.yaml"))
+	if err != nil {
+		return err
+	}
+	document, ok := value.(map[string]any)
+	if !ok {
+		return errors.New("document root must be an object")
+	}
+	if document["apiVersion"] != "mindclade.io/v1alpha1" || document["kind"] != "Component" {
+		return errors.New("apiVersion and kind must identify the Mindclade Component contract")
+	}
+	metadata, ok := document["metadata"].(map[string]any)
+	if !ok || metadata["name"] != "github-config" {
+		return errors.New("metadata.name must be github-config")
+	}
+	spec, ok := document["spec"].(map[string]any)
+	if !ok {
+		return errors.New("spec must be an object")
+	}
+	expectedStrings := map[string]string{
+		"owner": "developer-platform", "lifecycle": "pre-production",
+		"maturity": "pre-production", "repository_class": "governance-source",
+	}
+	for field, expected := range expectedStrings {
+		if spec[field] != expected {
+			return fmt.Errorf("spec.%s must be %q", field, expected)
+		}
+	}
+	for _, field := range []string{"trust_tier", "recovery_tier"} {
+		if text, ok := spec[field].(string); !ok || strings.TrimSpace(text) == "" {
+			return fmt.Errorf("spec.%s must be a non-empty string", field)
+		}
+	}
+	if authority, exists := spec["production_authority"].(bool); !exists || authority {
+		return errors.New("spec.production_authority must be false until connected qualification")
+	}
+	reviewers, ok := spec["security_reviewers"].([]any)
+	if !ok || len(reviewers) != 1 || reviewers[0] != "security" {
+		return errors.New("spec.security_reviewers must contain only security")
+	}
+	if dependencies, ok := spec["dependencies"].([]any); !ok || len(dependencies) == 0 {
+		return errors.New("spec.dependencies must be a non-empty list")
+	}
+	release, ok := spec["release"].(map[string]any)
+	if !ok || release["strategy"] != "reviewed-main" || release["artifact"] != "source-commit" || release["immutable"] != true {
+		return errors.New("spec.release must bind an immutable reviewed-main source commit")
+	}
+	activation, ok := spec["activation"].(map[string]any)
+	if !ok {
+		return errors.New("spec.activation must distinguish source_ready and connected")
+	}
+	for _, stage := range []string{"source_ready", "connected"} {
+		record, ok := activation[stage].(map[string]any)
+		description, hasDescription := record["description"].(string)
+		if !ok || !hasDescription || strings.TrimSpace(description) == "" {
+			return fmt.Errorf("spec.activation.%s.description must be non-empty", stage)
+		}
+	}
+	return nil
 }
 
 // AsMap converts a catalog without losing JSON field names.
@@ -218,7 +659,6 @@ func (catalog *Catalog) AsMap() map[string]any {
 		"teams":                 catalog.Teams,
 		"repositories":          catalog.Repositories,
 		"rulesets":              catalog.Rulesets,
-		"repository_gates":      catalog.RepositoryGates,
 		"environments":          catalog.Environments,
 		"integrations":          catalog.Integrations,
 		"source_digest":         catalog.SourceDigest,
@@ -236,7 +676,7 @@ func PolicyInput(root string) (map[string]any, error) {
 	result := map[string]any{
 		"api_version": validation.APIVersion,
 		"memberships": []any{}, "teams": []any{}, "repositories": []any{},
-		"rulesets": []any{}, "repository_gates": []any{}, "environments": []any{}, "integrations": []any{},
+		"rulesets": []any{}, "environments": []any{}, "integrations": []any{},
 		"tokens": []any{}, "workflow_qualifications": []any{},
 	}
 	for _, document := range documents {
@@ -257,8 +697,6 @@ func PolicyInput(root string) (map[string]any, error) {
 			result["repositories"] = append(result["repositories"].([]any), document.Raw)
 		case "Ruleset":
 			result["rulesets"] = append(result["rulesets"].([]any), document.Raw)
-		case "RepositoryGate":
-			result["repository_gates"] = append(result["repository_gates"].([]any), document.Raw)
 		case "Environment":
 			result["environments"] = append(result["environments"].([]any), document.Raw)
 		case "Integration":

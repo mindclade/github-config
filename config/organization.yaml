@@ -14,6 +14,16 @@ spec:
   members_can_fork_private_repositories: false
   web_commit_signoff_required: true
   two_factor_requirement: true
+  installation_inventory_qualification:
+    state: blocked
+    authority: bootstrap
+    blockers: [bootstrap-app-inventory-attestation-not-issued]
+  custom_property_migration:
+    phase: preserve
+    legacy_allowed_values:
+      owner_team: [platform]
+      ci_profile: [none]
+      production_authority: [enterprise-control]
   custom_properties:
     - name: repository_class
       value_type: single_select

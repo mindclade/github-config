@@ -21,6 +21,8 @@ def invoke(*arguments, environment=None):
         command, cwd = ["go", "run", "./cmd/github-configctl"], ROOT / "compiler"
     env = os.environ.copy()
     env.update(environment or {})
+    if env.get("GITHUB_API_URL", "").startswith(("http://127.0.0.1:", "http://localhost:")):
+        env.setdefault("MINDCLADE_GITHUB_RETRY_TEST_CLOCK", "advancing")
     return subprocess.run(command + ["--root", str(ROOT), *arguments], cwd=cwd, env=env, text=True,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
@@ -78,6 +80,11 @@ class ObservedStateDiffTest(unittest.TestCase):
             settings = pick(value, [
                 "prevent_self_review", "can_admins_bypass", "deployment_branch_policy",
             ])
+            settings["deployment_branch_policy"] = {
+                **settings["deployment_branch_policy"],
+                "branch_patterns": settings["deployment_branch_policy"].get("branch_patterns", []),
+                "tag_patterns": settings["deployment_branch_policy"].get("tag_patterns", []),
+            }
             settings["required_reviewers"] = [
                 pick(reviewer, ["type", "team"]) for reviewer in value["required_reviewers"]
             ]
@@ -86,15 +93,27 @@ class ObservedStateDiffTest(unittest.TestCase):
                 "repository_settings": {repository: settings for repository in value["repositories"]},
             }
 
+        organization = pick(catalog["organization"], [
+            "organization_login", "default_repository_permission",
+            "members_can_create_repositories", "members_can_create_public_repositories",
+            "members_can_create_private_repositories", "members_can_create_internal_repositories",
+            "members_can_create_pages", "members_can_fork_private_repositories",
+            "web_commit_signoff_required", "two_factor_requirement",
+        ])
+        migration = catalog["organization"]["custom_property_migration"]
+        organization["custom_properties"] = []
+        for property_definition in catalog["organization"]["custom_properties"]:
+            effective = dict(property_definition)
+            if migration["phase"] == "preserve":
+                effective["allowed_values"] = sorted(set(
+                    property_definition["allowed_values"]
+                    + migration["legacy_allowed_values"].get(property_definition["name"], [])
+                ))
+            organization["custom_properties"].append(effective)
+
         return {
             "projection_version": "github-rest/v1",
-            "organization": pick(catalog["organization"], [
-                "organization_login", "default_repository_permission",
-                "members_can_create_repositories", "members_can_create_public_repositories",
-                "members_can_create_private_repositories", "members_can_create_internal_repositories",
-                "members_can_create_pages", "members_can_fork_private_repositories",
-                "web_commit_signoff_required", "two_factor_requirement", "custom_properties",
-            ]),
+            "organization": organization,
             "actions_policy": {
                 **pick(catalog["actions_policy"], [
                 "mode", "github_owned_allowed", "verified_creator_allowed",
@@ -136,7 +155,7 @@ class ObservedStateDiffTest(unittest.TestCase):
             },
             "repositories": {
                 key: {
-                    **pick(value, ["name", "description", "visibility", "archived", "features", "merge_policy", "custom_properties"]),
+                    **pick(value, ["name", "description", "visibility", "actions_access_level", "archived", "features", "merge_policy", "custom_properties"]),
                     "web_commit_signoff_required": catalog["organization"]["web_commit_signoff_required"],
                     "security": pick(value["security"], [
                         "vulnerability_alerts", "dependabot_security_updates", "advanced_security",
@@ -170,6 +189,7 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             projection = self.managed_projection(json.loads(desired.read_text()))
             projection["repositories"]["github-config"]["web_commit_signoff_required"] = False
+            projection["repositories"]["github-config"]["actions_access_level"] = "organization"
             projection["organization"]["custom_properties"][0]["values_editable_by"] = "repository_actors"
             observed.write_text(json.dumps({"managed_projection": projection}))
             result = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
@@ -178,6 +198,7 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertIn(
                 "/repositories/github-config/web_commit_signoff_required", paths,
             )
+            self.assertIn("/repositories/github-config/actions_access_level", paths)
             self.assertIn("/organization/custom_properties", paths)
 
     def test_provider_required_repository_defaults_are_managed(self):
@@ -462,7 +483,23 @@ class ObservedStateDiffTest(unittest.TestCase):
 
             def do_GET(self):
                 requests.append((self.path, self.headers.get("X-GitHub-Api-Version")))
-                path = urlparse(self.path).path
+                parsed_url = urlparse(self.path)
+                path = parsed_url.path
+                query = parse_qs(parsed_url.query)
+                attempt = self.server.retry_counts.get(path, 0) + 1
+                self.server.retry_counts[path] = attempt
+                if (
+                    (path in self.server.retry_once and attempt == 1)
+                    or path in self.server.retry_always
+                    or attempt <= self.server.retry_until.get(path, 0)
+                ):
+                    self.send_response(429)
+                    self.send_header(
+                        "Retry-After", str(self.server.retry_after_seconds.get(path, 0)),
+                    )
+                    self.send_header("X-GitHub-Request-Id", f"retry-{attempt}")
+                    self.end_headers()
+                    return
                 status, value = 200, {}
                 list_paths = {
                     "/orgs/mindclade/properties/schema",
@@ -476,7 +513,7 @@ class ObservedStateDiffTest(unittest.TestCase):
                 if path == "/orgs/mindclade":
                     value = {
                         "id": 1, "login": "mindclade", "plan": {"name": "enterprise"},
-                        "public_repos": 0, "total_private_repos": 1,
+                        "public_repos": 0, "total_private_repos": 2,
                     }
                 elif path == "/orgs/mindclade/properties/schema":
                     value = [{
@@ -486,9 +523,12 @@ class ObservedStateDiffTest(unittest.TestCase):
                     }]
                 elif path == "/orgs/mindclade/rulesets":
                     value = [{"id": 99, "name": "application-source"}]
-                elif path == "/orgs/mindclade/rulesets/99":
+                    if self.server.organization_rulesets_duplicate:
+                        value.append({"id": 100, "name": "application-source"})
+                elif path in ("/orgs/mindclade/rulesets/99", "/orgs/mindclade/rulesets/100"):
                     value = {
-                        "id": 99, "name": "application-source", "target": "branch",
+                        "id": int(path.rsplit("/", 1)[1]),
+                        "name": "application-source", "target": "branch",
                         "enforcement": "active", "bypass_actors": [],
                         "conditions": {
                             "repository_name": {
@@ -527,28 +567,87 @@ class ObservedStateDiffTest(unittest.TestCase):
                         "use_immutable_subject": True,
                     }
                 elif path == "/orgs/mindclade/repos":
-                    value = [{
-                        "id": 2, "name": "github-config", "visibility": "private",
-                        "web_commit_signoff_required": True,
-                        "has_downloads": False,
-                        "squash_merge_commit_title": "PR_TITLE",
-                        "squash_merge_commit_message": "PR_BODY",
-                        "security_and_analysis": {
-                            "advanced_security": {"status": "enabled"},
-                            "secret_scanning": {"status": "enabled"},
-                            "secret_scanning_push_protection": {"status": "enabled"},
+                    value = [
+                        {
+                            "id": 2, "name": "github-config", "visibility": self.server.github_config_visibility,
+                            "web_commit_signoff_required": True,
+                            "has_downloads": False,
+                            "squash_merge_commit_title": "PR_TITLE",
+                            "squash_merge_commit_message": "PR_BODY",
+                            "security_and_analysis": {
+                                "advanced_security": {"status": "enabled"},
+                                "secret_scanning": {"status": "enabled"},
+                                "secret_scanning_push_protection": {"status": "enabled"},
+                            },
                         },
-                    }]
+                        {"id": 3, "name": "infrastructure-live", "visibility": "private"},
+                    ]
                 elif path == "/orgs/mindclade/installations":
                     value = {"total_count": 0, "installations": []}
-                elif path == "/repos/mindclade/github-config/actions/oidc/customization/sub":
+                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/oidc/customization/sub"):
                     value = {
                         "use_default": False,
                         "include_claim_keys": ["repo", "context", "workflow_ref", "workflow_sha"],
                         "use_immutable_subject": True,
                     }
+                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/permissions/access"):
+                    value = {"access_level": "none"}
                 elif path == "/repos/mindclade/github-config/environments":
                     value = {"total_count": 0, "environments": []}
+                elif path == "/repos/mindclade/infrastructure-live/environments":
+                    primary_environment = {
+                        "name": "infrastructure-apply",
+                        "can_admins_bypass": False,
+                        "deployment_branch_policy": {
+                            "protected_branches": False, "custom_branch_policies": True,
+                        },
+                        "protection_rules": [{
+                            "type": "required_reviewers", "prevent_self_review": True,
+                            "reviewers": [{
+                                "type": "Team", "reviewer": {"slug": "security"},
+                            }],
+                        }],
+                    }
+                    if self.server.environment_inventory_case == "paginated":
+                        page = int(query.get("page", ["1"])[0])
+                        if page == 1:
+                            environments_page = [primary_environment] + [
+                                {
+                                    "name": f"extra-{index:03d}",
+                                    "deployment_branch_policy": {
+                                        "protected_branches": True, "custom_branch_policies": False,
+                                    },
+                                }
+                                for index in range(99)
+                            ]
+                        else:
+                            environments_page = [{
+                                "name": "extra-100",
+                                "deployment_branch_policy": {
+                                    "protected_branches": True, "custom_branch_policies": False,
+                                },
+                            }]
+                        value = {"total_count": 101, "environments": environments_page}
+                    elif self.server.environment_inventory_case == "count_mismatch":
+                        value = {"total_count": 2, "environments": [primary_environment]}
+                    else:
+                        value = {"total_count": 1, "environments": [primary_environment]}
+                elif path == "/repos/mindclade/infrastructure-live/environments/infrastructure-apply/deployment-branch-policies":
+                    if self.server.environment_policy_readable:
+                        value = {
+                            "total_count": self.server.environment_policy_total_count,
+                            "branch_policies": [
+                                {"type": "branch", "name": "refs/pull/*/merge"},
+                                {"type": "branch", "name": "refs/heads/gh-readonly-queue/main/*"},
+                                {"type": "tag", "name": "refs/tags/review-*"},
+                            ],
+                        }
+                    else:
+                        status, value = 500, {"message": "deployment policies unavailable"}
+                elif path.startswith("/repos/mindclade/") and path.endswith((
+                    "/teams", "/collaborators", "/properties/values",
+                )):
+                    value = []
                 elif path.endswith(("/vulnerability-alerts", "/dependency-graph/sbom", "/automated-security-fixes", "/private-vulnerability-reporting")):
                     status, value = 204, None
                 elif path.endswith("/code-scanning/default-setup"):
@@ -565,6 +664,20 @@ class ObservedStateDiffTest(unittest.TestCase):
                     self.wfile.write(payload)
 
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.environment_policy_readable = True
+        server.environment_policy_total_count = 3
+        server.environment_inventory_case = "complete"
+        server.github_config_visibility = "private"
+        server.organization_rulesets_duplicate = False
+        server.retry_counts = {}
+        server.retry_once = {
+            "/orgs/mindclade",
+            "/repos/mindclade/github-config/vulnerability-alerts",
+            "/repos/mindclade/github-config/code-scanning/default-setup",
+        }
+        server.retry_always = set()
+        server.retry_until = {}
+        server.retry_after_seconds = {}
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
@@ -579,6 +692,148 @@ class ObservedStateDiffTest(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 observed = json.loads(output.read_text())
+                self.assertEqual(
+                    {path: server.retry_counts[path] for path in server.retry_once},
+                    {path: 2 for path in server.retry_once},
+                )
+                server.retry_once = set()
+                persistent_path = "/repos/mindclade/github-config/dependency-graph/sbom"
+                attempts_before = server.retry_counts[persistent_path]
+                server.retry_always = {persistent_path}
+                bounded_output = Path(temporary) / "observed-bounded-retry.json"
+                bounded_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(bounded_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(bounded_result.returncode, 0, bounded_result.stderr)
+                bounded_observed = json.loads(bounded_output.read_text())
+                self.assertFalse(bounded_observed["observation_complete"])
+                self.assertEqual(server.retry_counts[persistent_path] - attempts_before, 6)
+                self.assertIn(
+                    "dependency_graph:github-config",
+                    {error["section"] for error in bounded_observed["errors"]},
+                )
+                server.retry_always = set()
+                attempts_before = server.retry_counts[persistent_path]
+                server.retry_until[persistent_path] = attempts_before + 3
+                server.retry_after_seconds[persistent_path] = 20
+                recovered_output = Path(temporary) / "observed-rate-limit-recovered.json"
+                recovered_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(recovered_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(recovered_result.returncode, 0, recovered_result.stderr)
+                self.assertEqual(server.retry_counts[persistent_path] - attempts_before, 4)
+                recovered = json.loads(recovered_output.read_text())
+                self.assertNotIn(
+                    "dependency_graph:github-config",
+                    {error["section"] for error in recovered["errors"]},
+                )
+                server.retry_until = {}
+                attempts_before = server.retry_counts[persistent_path]
+                server.retry_after_seconds[persistent_path] = 120
+                server.retry_always = {persistent_path}
+                instructed_output = Path(temporary) / "observed-retry-after.json"
+                instructed_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(instructed_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(instructed_result.returncode, 0, instructed_result.stderr)
+                self.assertEqual(server.retry_counts[persistent_path] - attempts_before, 1)
+                server.retry_after_seconds = {}
+                server.retry_always = set()
+                server.environment_policy_readable = False
+                unreadable_output = Path(temporary) / "observed-unreadable-policy.json"
+                unreadable_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(unreadable_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(unreadable_result.returncode, 0, unreadable_result.stderr)
+                unreadable_observed = json.loads(unreadable_output.read_text())
+                server.environment_policy_readable = True
+                server.environment_policy_total_count = 4
+                incomplete_output = Path(temporary) / "observed-incomplete-policy.json"
+                incomplete_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(incomplete_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(incomplete_result.returncode, 0, incomplete_result.stderr)
+                incomplete_observed = json.loads(incomplete_output.read_text())
+                server.environment_policy_total_count = 3
+                server.environment_inventory_case = "paginated"
+                paginated_output = Path(temporary) / "observed-paginated-environments.json"
+                paginated_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(paginated_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(paginated_result.returncode, 0, paginated_result.stderr)
+                paginated_observed = json.loads(paginated_output.read_text())
+                server.environment_inventory_case = "count_mismatch"
+                mismatched_output = Path(temporary) / "observed-mismatched-environments.json"
+                mismatched_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(mismatched_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(mismatched_result.returncode, 0, mismatched_result.stderr)
+                mismatched_observed = json.loads(mismatched_output.read_text())
+                server.environment_inventory_case = "complete"
+                request_offset = len(requests)
+                server.github_config_visibility = "public"
+                public_output = Path(temporary) / "observed-public-migration.json"
+                public_result = invoke(
+                    "observe", "--organization", "mindclade", "--output", str(public_output),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertEqual(public_result.returncode, 0, public_result.stderr)
+                public_observed = json.loads(public_output.read_text())
+                public_requests = {urlparse(path).path for path, _ in requests[request_offset:]}
+                server.github_config_visibility = "private"
+                server.organization_rulesets_duplicate = True
+                duplicate_organization_result = invoke(
+                    "observe", "--organization", "mindclade",
+                    "--output", str(Path(temporary) / "duplicate-organization-ruleset.json"),
+                    environment={
+                        "GITHUB_TOKEN": "fixture-token",
+                        "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
+                    },
+                )
+                self.assertNotEqual(duplicate_organization_result.returncode, 0)
+                self.assertIn('duplicate "name" values', duplicate_organization_result.stderr)
+                self.assertNotIn("application-source", duplicate_organization_result.stderr)
+                desired_output = Path(temporary) / "desired.json"
+                drift_output = Path(temporary) / "unreadable-policy-drift.json"
+                compiled = invoke("compile", "--output", str(desired_output))
+                self.assertEqual(compiled.returncode, 0, compiled.stderr)
+                drift = invoke(
+                    "diff", "--desired", str(desired_output), "--observed", str(unreadable_output),
+                    "--output", str(drift_output),
+                )
+                self.assertEqual(drift.returncode, 2, drift.stderr)
+                unreadable_drift = json.loads(drift_output.read_text())
         finally:
             server.shutdown()
             thread.join(timeout=5)
@@ -591,6 +846,10 @@ class ObservedStateDiffTest(unittest.TestCase):
         self.assertTrue(repository_security["secret_scanning_push_protection"])
         self.assertTrue(
             observed["managed_projection"]["repositories"]["github-config"]["web_commit_signoff_required"],
+        )
+        self.assertEqual(
+            observed["managed_projection"]["repositories"]["github-config"]["actions_access_level"],
+            "none",
         )
         self.assertFalse(
             observed["managed_projection"]["repositories"]["github-config"]["features"]["downloads"],
@@ -616,6 +875,54 @@ class ObservedStateDiffTest(unittest.TestCase):
             observed_ruleset["rules"]["required_status_checks"]["do_not_enforce_on_create"],
         )
         self.assertEqual(observed_ruleset["rule_types"], ["required_status_checks"])
+        observed_policy = observed["managed_projection"]["environments"]["infrastructure-apply"][
+            "repository_settings"
+        ]["infrastructure-live"]["deployment_branch_policy"]
+        self.assertEqual(
+            observed_policy["branch_patterns"],
+            ["refs/heads/gh-readonly-queue/main/*", "refs/pull/*/merge"],
+        )
+        self.assertEqual(observed_policy["tag_patterns"], ["refs/tags/review-*"])
+        unreadable_policy = unreadable_observed["managed_projection"]["environments"][
+            "infrastructure-apply"
+        ]["repository_settings"]["infrastructure-live"]["deployment_branch_policy"]
+        self.assertEqual(unreadable_policy, {"status": "unknown"})
+        self.assertFalse(unreadable_observed["observation_complete"])
+        incomplete_policy = incomplete_observed["managed_projection"]["environments"][
+            "infrastructure-apply"
+        ]["repository_settings"]["infrastructure-live"]["deployment_branch_policy"]
+        self.assertEqual(incomplete_policy, {"status": "unknown"})
+        self.assertFalse(incomplete_observed["observation_complete"])
+        self.assertTrue(paginated_observed["observation_complete"])
+        self.assertIn(
+            "/repos/mindclade/infrastructure-live/environments?per_page=100&page=2",
+            {path for path, _ in requests},
+        )
+        self.assertFalse(mismatched_observed["observation_complete"])
+        self.assertIn(
+            "repository_environments:infrastructure-live",
+            {error["section"] for error in mismatched_observed["errors"]},
+        )
+        self.assertNotIn("/repos/mindclade/github-config/actions/permissions/access", public_requests)
+        self.assertIn("/repos/mindclade/github-config/private-vulnerability-reporting", public_requests)
+        self.assertNotIn(
+            "repository_actions_access:github-config",
+            {error["section"] for error in public_observed["errors"]},
+        )
+        self.assertIn(
+            "environment_deployment_policies:infrastructure-live:infrastructure-apply",
+            {error["section"] for error in incomplete_observed["errors"]},
+        )
+        self.assertIn(
+            {
+                "kind": "unknown",
+                "path": "/environments/infrastructure-apply/repository_settings/infrastructure-live/deployment_branch_policy",
+            },
+            [
+                {"kind": change["kind"], "path": change["path"]}
+                for change in unreadable_drift["changes"]
+            ],
+        )
         self.assertEqual(observed["managed_projection"]["actions_policy"]["mode"], "selected")
         self.assertEqual(observed["managed_projection"]["actions_policy"]["enabled_repositories"], "all")
         self.assertEqual(observed["managed_projection"]["actions_policy"]["required_pin"], "unrestricted")
@@ -628,6 +935,10 @@ class ObservedStateDiffTest(unittest.TestCase):
         requested_paths = {urlparse(path).path for path, _ in requests}
         self.assertIn("/orgs/mindclade/organization-roles/77/teams", requested_paths)
         self.assertNotIn("/orgs/mindclade/security-managers", requested_paths)
+        self.assertIn(
+            "/repos/mindclade/github-config/actions/permissions/access",
+            requested_paths,
+        )
 
     def test_repository_inventory_requires_authoritative_organization_totals(self):
         repository_names = [
@@ -700,6 +1011,9 @@ class ObservedStateDiffTest(unittest.TestCase):
                             } for index in range(100)]}
                     else:
                         value = {"total_count": 0, "installations": []}
+                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/permissions/access"):
+                    repository = path.split("/")[4]
+                    value = {"access_level": "organization" if repository == ".github" else "none"}
                 elif path.endswith("/actions/oidc/customization/sub"):
                     value = {
                         "use_default": False,
@@ -781,6 +1095,7 @@ class ObservedStateDiffTest(unittest.TestCase):
                 missing_page = observe("installation-missing-page", (0, 6), "missing_page")
                 self.assertFalse(missing_page["installation_inventory"]["api_inventory_complete"])
                 self.assertFalse(missing_page["observation_complete"])
+
         finally:
             server.shutdown()
             thread.join(timeout=5)

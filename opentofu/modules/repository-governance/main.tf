@@ -104,6 +104,17 @@ resource "github_repository_dependabot_security_updates" "this" {
   enabled    = each.value.security.dependabot_security_updates
 }
 
+resource "github_actions_repository_access_level" "this" {
+  for_each = local.repositories
+
+  repository   = github_repository.this[each.key].name
+  access_level = each.value.actions_access_level
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 resource "github_actions_repository_oidc_subject_claim_customization_template" "this" {
   for_each = local.repositories
 

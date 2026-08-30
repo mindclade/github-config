@@ -48,10 +48,15 @@
         "repository": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"},
         "workflow": {"type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"},
         "context": {"$ref": "#/$defs/context"},
-        "audience": {"type": "string", "minLength": 1, "maxLength": 255},
+        "audience": {
+          "oneOf": [
+            {"const": "canonical-provider-resource"},
+            {"type": "string", "pattern": "^(?:sts\\.googleapis\\.com|https://\\S{1,247})$"}
+          ]
+        },
         "require_immutable_workflow_ref": {"type": "boolean"},
-        "workload_identity_provider_ref": {"enum": ["github-config-plan", "github-config-apply"]},
-        "service_account_ref": {"enum": ["github-config-plan", "github-config-apply"]}
+        "workload_identity_provider_ref": {"enum": ["github-config-plan", "github-config-apply", "github-actions-plan", "github-actions-apply", "github-actions-recovery", "infrastructure-plan", "development-plan", "development-apply", "staging-plan", "staging-apply", "production-plan", "production-apply", "restricted-plan", "restricted-apply", "verifier"]},
+        "service_account_ref": {"enum": ["github-config-plan", "github-config-apply", "bootstrap-plan", "bootstrap-apply", "bootstrap-recovery", "infrastructure-plan", "development-plan", "development-apply", "staging-plan", "staging-apply", "production-plan", "production-apply", "restricted-plan", "restricted-apply", "ci-evidence-verifier"]}
       }
     },
     "spec": {
@@ -68,7 +73,15 @@
           "uniqueItems": true,
           "items": {"enum": ["repo", "context", "workflow_ref", "workflow_sha"]}
         },
-        "audiences": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 255}},
+        "audiences": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {
+            "oneOf": [
+              {"const": "canonical-provider-resource"},
+              {"type": "string", "pattern": "^(?:sts\\.googleapis\\.com|https://\\S{1,247})$"}
+            ]
+          }
+        },
         "subjects": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/subject"}},
         "activation": {"$ref": "#/$defs/activation"}
       }

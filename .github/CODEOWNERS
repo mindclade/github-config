@@ -1,5 +1,5 @@
-# Default ownership is deliberately security-led for this governance repository.
-* @mindclade/security
+# Developer Platform owns GitHub governance semantics; Security is the required trust-policy reviewer.
+* @mindclade/developer-platform @mindclade/security
 
 /.github/ @mindclade/security @mindclade/developer-platform
 /config/ @mindclade/security @mindclade/architecture
@@ -11,4 +11,4 @@
 /runbooks/ @mindclade/platform-operations @mindclade/security
 /MODULE.bazel @mindclade/developer-platform @mindclade/security
 /BUILD.bazel @mindclade/developer-platform @mindclade/security
-/component.yaml @mindclade/architecture @mindclade/security
+/component.yaml @mindclade/developer-platform @mindclade/architecture @mindclade/security

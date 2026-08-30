@@ -14,6 +14,15 @@ spec:
     - workflow_sha
   audiences:
     - sts.googleapis.com
+    - canonical-provider-resource
+    - https://github.mindclade.io/oidc/infrastructure-live/development/plan
+    - https://github.mindclade.io/oidc/infrastructure-live/development/apply
+    - https://github.mindclade.io/oidc/infrastructure-live/staging/plan
+    - https://github.mindclade.io/oidc/infrastructure-live/staging/apply
+    - https://github.mindclade.io/oidc/infrastructure-live/production/plan
+    - https://github.mindclade.io/oidc/infrastructure-live/production/apply
+    - https://github.mindclade.io/oidc/infrastructure-live/restricted/plan
+    - https://github.mindclade.io/oidc/infrastructure-live/restricted/apply
   subjects:
     - id: github-config-drift-plan
       repository: github-config
@@ -45,9 +54,147 @@ spec:
       require_immutable_workflow_ref: true
       workload_identity_provider_ref: github-config-apply
       service_account_ref: github-config-apply
+    - id: bootstrap-protected-plan
+      repository: bootstrap
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: trusted-build
+      audience: sts.googleapis.com
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: github-actions-plan
+      service_account_ref: bootstrap-plan
+    - id: bootstrap-protected-apply
+      repository: bootstrap
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: sts.googleapis.com
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: github-actions-apply
+      service_account_ref: bootstrap-apply
+    - id: bootstrap-recovery-verification
+      repository: bootstrap
+      workflow: .github/workflows/recovery-verification.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: sts.googleapis.com
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: github-actions-recovery
+      service_account_ref: bootstrap-recovery
+    - id: infrastructure-drift-plan
+      repository: infrastructure-live
+      workflow: .github/workflows/drift-detection.yml
+      context:
+        type: environment
+        value: trusted-build
+      audience: sts.googleapis.com
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: infrastructure-plan
+      service_account_ref: infrastructure-plan
+    - id: infrastructure-live-development-plan
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: trusted-build
+      audience: https://github.mindclade.io/oidc/infrastructure-live/development/plan
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: development-plan
+      service_account_ref: development-plan
+    - id: infrastructure-live-development-apply
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: https://github.mindclade.io/oidc/infrastructure-live/development/apply
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: development-apply
+      service_account_ref: development-apply
+    - id: infrastructure-live-staging-plan
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: trusted-build
+      audience: https://github.mindclade.io/oidc/infrastructure-live/staging/plan
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: staging-plan
+      service_account_ref: staging-plan
+    - id: infrastructure-live-staging-apply
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: https://github.mindclade.io/oidc/infrastructure-live/staging/apply
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: staging-apply
+      service_account_ref: staging-apply
+    - id: infrastructure-live-production-plan
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: trusted-build
+      audience: https://github.mindclade.io/oidc/infrastructure-live/production/plan
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: production-plan
+      service_account_ref: production-plan
+    - id: infrastructure-live-production-apply
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: https://github.mindclade.io/oidc/infrastructure-live/production/apply
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: production-apply
+      service_account_ref: production-apply
+    - id: infrastructure-live-restricted-plan
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: trusted-build
+      audience: https://github.mindclade.io/oidc/infrastructure-live/restricted/plan
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: restricted-plan
+      service_account_ref: restricted-plan
+    - id: infrastructure-live-restricted-apply
+      repository: infrastructure-live
+      workflow: .github/workflows/protected-apply.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: https://github.mindclade.io/oidc/infrastructure-live/restricted/apply
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: restricted-apply
+      service_account_ref: restricted-apply
+    - id: infrastructure-ci-evidence-verifier
+      repository: infrastructure-live
+      workflow: .github/workflows/disaster-recovery.yml
+      context:
+        type: environment
+        value: infrastructure-apply
+      audience: canonical-provider-resource
+      require_immutable_workflow_ref: true
+      workload_identity_provider_ref: verifier
+      service_account_ref: ci-evidence-verifier
   activation:
     state: blocked
     blockers:
       - immutable-workflow-revisions-not-qualified
       - immutable-owner-and-repository-ids-not-qualified
       - workload-identity-federation-not-qualified
+      - github-config-drift-identity-not-connected-qualified
+      - github-config-protected-plan-identity-not-connected-qualified
+      - github-config-protected-apply-identity-not-connected-qualified
+      - infrastructure-drift-plan-identity-not-connected-qualified
+      - ci-evidence-verifier-canonical-audience-handoff-not-connected-qualified
+      - plan-evidence-signing-key-not-connected-qualified
+      - connected-workflow-authorities-not-qualified
+      - reusable-iac-interface-blueprint-amendment-required

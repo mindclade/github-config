@@ -33,6 +33,13 @@ import {
 }
 
 import {
+  for_each = var.adopted_repository_actions_access_levels
+
+  to = module.repository_governance.github_actions_repository_access_level.this[each.key]
+  id = each.value
+}
+
+import {
   for_each = var.adopted_repository_oidc_templates
 
   to = module.repository_governance.github_actions_repository_oidc_subject_claim_customization_template.this[each.key]

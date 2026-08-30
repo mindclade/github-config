@@ -11,7 +11,6 @@ variable "catalog" {
     teams                 = any
     repositories          = any
     rulesets              = any
-    repository_gates      = any
     environments          = any
     integrations          = any
     activation            = optional(any, {})
@@ -44,7 +43,6 @@ variable "catalog" {
       can(keys(var.catalog.teams)) &&
       can(keys(var.catalog.repositories)) &&
       can(keys(var.catalog.rulesets)) &&
-      can(keys(var.catalog.repository_gates)) &&
       can(keys(var.catalog.environments)) &&
       can(keys(var.catalog.integrations))
     )
@@ -158,26 +156,14 @@ variable "qualified_status_check_integration_ids" {
     condition = alltrue([
       for issuer_type, integration_id in var.qualified_status_check_integration_ids :
       length(flatten([
-        for ruleset in concat(values(var.catalog.rulesets), values(var.catalog.repository_gates)) : [
+        for ruleset in values(var.catalog.rulesets) : [
           for check in try(ruleset.rules.required_status_checks.checks, []) : check
-          if check.issuer_type == issuer_type
-        ]
-        ])) + length(flatten([
-        for gate in values(var.catalog.repository_gates) : [
-          for check in try(gate.required_status_checks.checks, []) : check
           if check.issuer_type == issuer_type
         ]
       ])) > 0 &&
       alltrue(flatten([
         for ruleset in values(var.catalog.rulesets) : [
           for check in try(ruleset.rules.required_status_checks.checks, []) :
-          try(check.integration_id == integration_id, false)
-          if check.issuer_type == issuer_type
-        ]
-      ])) &&
-      alltrue(flatten([
-        for gate in values(var.catalog.repository_gates) : [
-          for check in try(gate.required_status_checks.checks, []) :
           try(check.integration_id == integration_id, false)
           if check.issuer_type == issuer_type
         ]
@@ -215,6 +201,20 @@ variable "adopted_repository_names" {
   }
 }
 
+variable "adopted_repository_actions_access_levels" {
+  description = "Reviewed existing repository Actions access-level settings keyed by catalog repository identifier."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for repository_key, import_id in var.adopted_repository_actions_access_levels :
+      try(var.catalog.repositories[repository_key].name == import_id, false)
+    ])
+    error_message = "Repository Actions access-level imports must exactly bind catalog repository identifiers to repository names."
+  }
+}
+
 variable "adopted_ruleset_ids" {
   description = "Reviewed numeric IDs for pre-existing physical organization rulesets."
   type        = map(number)
@@ -235,6 +235,25 @@ variable "adopted_ruleset_ids" {
       )
     ])
     error_message = "Adopted ruleset IDs must be positive and keyed by a catalog or generated creator-gate ruleset identifier."
+  }
+}
+
+variable "adopted_ruleset_enforcements" {
+  description = "Exact live enforcement values paired with adopted organization ruleset IDs."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition = alltrue([
+      for ruleset_key, enforcement in var.adopted_ruleset_enforcements :
+      contains(["disabled", "evaluate", "active"], enforcement) && (
+        contains(keys(var.catalog.rulesets), ruleset_key) || (
+          endswith(ruleset_key, "--creator-gate") &&
+          try(var.catalog.rulesets[trimsuffix(ruleset_key, "--creator-gate")].target == "tag", false)
+        )
+      )
+    ])
+    error_message = "Adopted organization ruleset enforcement values must be exact and catalog-bound."
   }
 }
 
@@ -273,7 +292,7 @@ variable "adopted_environment_policy_ids" {
     condition = alltrue([
       for policy_key, import_id in var.adopted_environment_policy_ids :
       length(split(":", import_id)) == 3 &&
-      can(tonumber(split(":", import_id)[2])) &&
+      try(tonumber(try(split(":", import_id)[2], "")) > 0, false) &&
       contains(flatten([
         for environment_key, environment in var.catalog.environments : flatten([
           for repository_reference in environment.repositories : concat(
@@ -286,7 +305,7 @@ variable "adopted_environment_policy_ids" {
                   if repository.name == repository_reference
                 ]), null),
                 repository_reference,
-              )}:${environment.name}:${split(":", import_id)[2]}"
+              )}:${environment.name}:${try(split(":", import_id)[2], "")}"
             ],
             [
               for pattern in try(environment.deployment_branch_policy.tag_patterns, []) :
@@ -297,7 +316,7 @@ variable "adopted_environment_policy_ids" {
                   if repository.name == repository_reference
                 ]), null),
                 repository_reference,
-              )}:${environment.name}:${split(":", import_id)[2]}"
+              )}:${environment.name}:${try(split(":", import_id)[2], "")}"
             ],
           )
         ])
@@ -541,16 +560,10 @@ locals {
     length(ruleset.bypass_actors.unresolved_integrations) == 0
   ])
 
-  repository_gate_enforcement_ready = alltrue([
-    for gate in values(module.rulesets.repository_gate_preflight) :
-    gate.required_deployments.managed &&
-    gate.status_check_issuers.managed &&
-    gate.bypass_actors.managed
-  ])
-
   organization_enforcement_ready = (
     module.organization_settings.deployment_preflight.organization_settings.managed &&
     (!module.organization_settings.deployment_preflight.two_factor_requirement.desired || module.organization_settings.deployment_preflight.two_factor_requirement.managed) &&
+    !module.organization_settings.deployment_preflight.custom_property_migration.enforcement_blocked &&
     module.organization_settings.deployment_preflight.actions_runner_policy.managed &&
     module.organization_settings.deployment_preflight.security_policy.managed &&
     (length(module.organization_settings.deployment_preflight.oidc_audiences.desired) == 0 || module.organization_settings.deployment_preflight.oidc_audiences.managed) &&
@@ -581,7 +594,6 @@ locals {
     local.organization_enforcement_ready &&
     local.repository_enforcement_ready &&
     local.ruleset_enforcement_ready &&
-    local.repository_gate_enforcement_ready &&
     local.environment_enforcement_ready &&
     local.access_enforcement_ready
   )
@@ -632,15 +644,21 @@ module "rulesets" {
   source = "../../modules/ruleset"
 
   rulesets                               = var.catalog.rulesets
-  repository_gates                       = var.catalog.repository_gates
   repository_names                       = module.repository_governance.repository_names
-  environment_names                      = { for key, environment in var.catalog.environments : key => environment.name }
   team_ids                               = module.team_access.team_ids
   rollout_phase                          = var.rollout_phase
+  adopted_ruleset_enforcements           = var.adopted_ruleset_enforcements
   qualified_integration_actor_ids        = var.qualified_integration_actor_ids
   qualified_status_check_integration_ids = var.qualified_status_check_integration_ids
 
   depends_on = [module.repository_environments]
+}
+
+check "adopted_ruleset_bindings_are_paired" {
+  assert {
+    condition     = toset(keys(var.adopted_ruleset_ids)) == toset(keys(var.adopted_ruleset_enforcements))
+    error_message = "Every adopted ruleset ID must have exactly one observed enforcement value and vice versa."
+  }
 }
 
 module "repository_environments" {

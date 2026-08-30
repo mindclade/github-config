@@ -12,7 +12,9 @@ spec:
   code_scanning_default_setup_required: true
   secret_scanning_required: true
   secret_scanning_push_protection_required: true
-  private_vulnerability_reporting_required: true
+  # GitHub private vulnerability reporting applies only to public repositories.
+  # This estate is private/internal and uses repository security advisories.
+  private_vulnerability_reporting_required: false
   required_capabilities:
     - github-enterprise-cloud
     - github-advanced-security

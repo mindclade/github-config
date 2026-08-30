@@ -5,7 +5,7 @@ metadata:
   owner_team: security
 spec:
   name: trusted-build
-  repositories: [.github, github-config, bootstrap, infrastructure-live, mindclade]
+  repositories: [github-config, bootstrap, infrastructure-live]
   prevent_self_review: true
   can_admins_bypass: false
   required_reviewers:
@@ -21,8 +21,8 @@ spec:
     protected_branches: true
     custom_branch_policies: false
   allowed_workflows:
-    - .github/workflows/pull-request.yml
     - .github/workflows/protected-apply.yml
+    - .github/workflows/drift-detection.yml
   activation:
     state: blocked
     blockers: [independent-reviewer-required, protected-environment-not-qualified]

@@ -43,6 +43,15 @@ output "deployment_preflight" {
       desired = var.organization.two_factor_requirement
       reason  = "provider 6.13.0 does not expose this organization setting as a writable attribute"
     }
+    custom_property_migration = {
+      managed             = var.organization.custom_property_migration.phase == "retire"
+      enforcement_blocked = var.organization.custom_property_migration.phase != "retire"
+      desired             = var.organization.custom_property_migration
+      effective_definitions = {
+        for name, property in local.custom_properties : name => property.allowed_values
+      }
+      reason = "legacy enum values remain unioned with desired definitions until repository assignments converge and a separately reviewed source change retires them"
+    }
     actions_sha_pinning = {
       managed = true
       desired = var.actions_policy.required_pin == "commit_sha"

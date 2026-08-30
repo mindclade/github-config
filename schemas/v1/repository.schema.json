@@ -96,11 +96,12 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "description", "visibility", "archived", "archive_on_destroy", "features", "merge_policy", "security", "custom_properties", "team_grants", "direct_collaborators"],
+      "required": ["name", "description", "visibility", "actions_access_level", "archived", "archive_on_destroy", "features", "merge_policy", "security", "custom_properties", "team_grants", "direct_collaborators"],
       "properties": {
         "name": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"},
         "description": {"type": "string", "minLength": 10, "maxLength": 350},
         "visibility": {"enum": ["private", "internal"]},
+        "actions_access_level": {"enum": ["none", "organization"]},
         "archived": {"type": "boolean"},
         "archive_on_destroy": {"type": "boolean"},
         "features": {"$ref": "#/$defs/features"},

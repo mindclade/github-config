@@ -2,11 +2,12 @@ api_version: github.mindclade.io/v1
 kind: Repository
 metadata:
   id: github-config
-  owner_team: security
+  owner_team: developer-platform
 spec:
   name: github-config
   description: Declarative GitHub organization governance control plane.
   visibility: private
+  actions_access_level: none
   archived: false
   archive_on_destroy: true
   features:
@@ -32,7 +33,7 @@ spec:
     secret_scanning_push_protection: true
   custom_properties:
     repository_class: governance-source
-    owner_team: security
+    owner_team: developer-platform
     criticality: critical
     data_classification: restricted
     lifecycle: active
@@ -42,4 +43,10 @@ spec:
   team_grants:
     - team: security
       permission: maintain
+    - team: developer-platform
+      permission: maintain
+    - team: architecture
+      permission: push
+    - team: platform-operations
+      permission: push
   direct_collaborators: []

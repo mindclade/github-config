@@ -20,7 +20,14 @@ spec:
   deployment_branch_policy:
     protected_branches: true
     custom_branch_policies: false
-  allowed_workflows: [.github/workflows/protected-apply.yml]
+  allowed_workflows:
+    - .github/workflows/protected-apply.yml
+    - .github/workflows/disaster-recovery.yml
+    - .github/workflows/recovery-verification.yml
   activation:
     state: blocked
-    blockers: [independent-reviewer-required, protected-environment-not-qualified]
+    blockers:
+      - independent-reviewer-required
+      - protected-environment-not-qualified
+      - ci-evidence-verifier-handoff-not-connected-qualified
+      - infrastructure-export-verifier-handoff-not-connected-qualified

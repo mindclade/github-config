@@ -37,6 +37,7 @@ class CompilerDeterminismTest(unittest.TestCase):
             second = Path(second_temp)
             shutil.copytree(ROOT / "config", second / "config")
             shutil.copytree(ROOT / "schemas", second / "schemas")
+            shutil.copy2(ROOT / "component.yaml", second / "component.yaml")
 
             organization = second / "config" / "organization.yaml"
             lines = organization.read_text().splitlines(keepends=True)
@@ -52,7 +53,7 @@ class CompilerDeterminismTest(unittest.TestCase):
                 set(catalog),
                 {"api_version", "activation", "organization", "actions_policy", "security_policy", "oidc_policy",
                  "members", "outside_collaborators", "teams", "repositories", "rulesets",
-                 "repository_gates", "environments", "integrations", "source_digest"},
+                 "environments", "integrations", "source_digest"},
             )
 
     def test_tofu_variable_file_wraps_the_identical_catalog(self):

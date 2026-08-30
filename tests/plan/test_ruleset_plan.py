@@ -64,23 +64,5 @@ class RulesetPlanTest(unittest.TestCase):
         for ruleset in catalog["rulesets"].values():
             self.assertLessEqual(set(ruleset["repositories"]), repositories)
 
-        gate = catalog["repository_gates"]["infrastructure-live-authorities"]
-        self.assertIn(gate["repository"], repositories)
-        self.assertEqual(gate["target"], "branch")
-        self.assertEqual(gate["bypass_actors"], [])
-        self.assertEqual(
-            set(gate["required_deployments"]),
-            {"infrastructure-source-review", "security-source-review"},
-        )
-        self.assertEqual(
-            {check["context"] for check in gate["required_status_checks"]["checks"]},
-            {"Authority review / platform-operations", "Authority review / security"},
-        )
-        self.assertTrue(all(
-            set(check["triggers"]) == {"pull_request", "merge_group"}
-            for check in gate["required_status_checks"]["checks"]
-        ))
-
-
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])

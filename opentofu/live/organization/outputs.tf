@@ -84,6 +84,7 @@ output "deployment_preflight" {
       organization_oidc_templates      = var.adopted_organization_oidc_templates
       organization_custom_properties   = var.adopted_organization_custom_properties
       repository_names                 = var.adopted_repository_names
+      repository_actions_access_levels = var.adopted_repository_actions_access_levels
       repository_oidc_templates        = var.adopted_repository_oidc_templates
       repository_custom_properties     = var.adopted_repository_custom_properties
       dependabot_security_updates      = var.adopted_dependabot_security_updates

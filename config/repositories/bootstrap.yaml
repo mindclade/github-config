@@ -7,6 +7,7 @@ spec:
   name: bootstrap
   description: Root trust, state, federation, signing, and recovery foundations.
   visibility: private
+  actions_access_level: none
   archived: false
   archive_on_destroy: true
   features:

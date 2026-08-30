@@ -24,6 +24,7 @@ variable "environments" {
       tag_patterns           = optional(list(string), [])
     })
     allowed_workflows = list(string)
+    variables         = optional(map(string), {})
     activation        = optional(any)
   }))
 
@@ -52,6 +53,54 @@ variable "environments" {
       )
     ])
     error_message = "Environment branch policy modes are mutually exclusive; custom policies require at least one exact branch or tag pattern and protected-branch policies may not declare patterns."
+  }
+
+  validation {
+    condition = alltrue([
+      for environment in values(var.environments) :
+      environment.name == "infrastructure-apply" && try(environment.activation.state, "blocked") == "ready" ? (
+        toset(keys(environment.variables)) == toset([
+          "CI_EVIDENCE_ARCHIVE_BUCKET",
+          "CI_EVIDENCE_VERIFIER_SERVICE_ACCOUNT",
+          "CI_EVIDENCE_VERIFIER_WIF_PROVIDER",
+          "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_DEVELOPMENT",
+          "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_STAGING",
+          "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_PRODUCTION",
+          "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_RESTRICTED",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_DEVELOPMENT",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_STAGING",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_PRODUCTION",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_RESTRICTED",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_DEVELOPMENT",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_STAGING",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_PRODUCTION",
+          "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_RESTRICTED",
+        ]) &&
+        can(regex("^projects/[1-9][0-9]*/locations/global/workloadIdentityPools/github-ci-evidence/providers/verifier$", environment.variables.CI_EVIDENCE_VERIFIER_WIF_PROVIDER)) &&
+        can(regex("^ci-evidence-verifier@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", environment.variables.CI_EVIDENCE_VERIFIER_SERVICE_ACCOUNT)) &&
+        can(regex("^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$", environment.variables.CI_EVIDENCE_ARCHIVE_BUCKET)) &&
+        alltrue([
+          for environment_name in ["DEVELOPMENT", "STAGING", "PRODUCTION", "RESTRICTED"] :
+          can(regex("^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/infrastructure-export/cryptoKeyVersions/[1-9][0-9]*$", environment.variables["INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_${environment_name}"])) &&
+          can(regex("^[A-Za-z0-9+/]+={0,2}$", environment.variables["INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_${environment_name}"])) &&
+          can(base64decode(environment.variables["INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_${environment_name}"])) &&
+          can(regex("^sha256:[0-9a-f]{64}$", environment.variables["INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_${environment_name}"]))
+        ]) &&
+        length(toset([
+          for environment_name in ["DEVELOPMENT", "STAGING", "PRODUCTION", "RESTRICTED"] :
+          environment.variables["INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_${environment_name}"]
+        ])) == 1 &&
+        length(toset([
+          for environment_name in ["DEVELOPMENT", "STAGING", "PRODUCTION", "RESTRICTED"] :
+          environment.variables["INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_${environment_name}"]
+        ])) == 1 &&
+        length(toset([
+          for environment_name in ["DEVELOPMENT", "STAGING", "PRODUCTION", "RESTRICTED"] :
+          environment.variables["INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_${environment_name}"]
+        ])) == 1
+      ) : length(environment.variables) == 0
+    ])
+    error_message = "Only a ready infrastructure-apply environment may declare its exact CI verifier and bootstrap-qualified P-256 infrastructure-export verifier variables."
   }
 }
 

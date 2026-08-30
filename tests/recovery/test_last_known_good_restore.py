@@ -12,6 +12,24 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = os.environ.get("GITHUB_CONFIGCTL") or (sys.argv[1] if len(sys.argv) > 1 else "")
+EXPORT_PUBLIC_KEY_PEM_B64 = "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FFWGxweHIzcUJIenBXUTl4N2JuZFJmTDlBdTZCRApGb0syQnJ2RDZvd0JrSHo1dEtmM3RtSTZrZjRuRDdnODhFZUMzV2JhVzhNN1dmaDFhUjR4RUJyTWhnPT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
+EXPORT_PUBLIC_KEY_DIGEST = "sha256:93009eb9d670bf27e3df2c42773636588f0c351b5a4b3ce3f82db827302d83fb"
+EXPORT_KEY_VERSION = "projects/signing-root/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/infrastructure-export/cryptoKeyVersions/1"
+
+
+def qualified_infrastructure_apply_variables():
+    values = {
+        "CI_EVIDENCE_ARCHIVE_BUCKET": "production-ci-evidence",
+        "CI_EVIDENCE_VERIFIER_SERVICE_ACCOUNT": "ci-evidence-verifier@identity-root.iam.gserviceaccount.com",
+        "CI_EVIDENCE_VERIFIER_WIF_PROVIDER": "projects/123/locations/global/workloadIdentityPools/github-ci-evidence/providers/verifier",
+    }
+    for environment in ("DEVELOPMENT", "STAGING", "PRODUCTION", "RESTRICTED"):
+        values[f"INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_{environment}"] = EXPORT_KEY_VERSION
+        values[f"INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_{environment}"] = EXPORT_PUBLIC_KEY_PEM_B64
+        values[f"INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_{environment}"] = EXPORT_PUBLIC_KEY_DIGEST
+    return "  variables:\n" + "".join(
+        f"    {name}: {value}\n" for name, value in values.items()
+    )
 
 
 def invoke(*arguments, root=ROOT):
@@ -23,6 +41,36 @@ def invoke(*arguments, root=ROOT):
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
 
+def plan_json_digest(plan):
+    projection = {
+        key: plan[key]
+        for key in ("format_version", "terraform_version", "resource_changes", "output_changes")
+        if key in plan
+    }
+    canonical = json.dumps(
+        projection, sort_keys=True, indent=2, ensure_ascii=False,
+    ) + "\n"
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def write_dependency_analysis(path, plan, change_ids, change_reference="GOV-TEST"):
+    path.write_text(json.dumps({
+        "api_version": "github.mindclade.io/v1",
+        "kind": "DependencyAnalysis",
+        "plan_json_digest": plan_json_digest(plan),
+        "change_reference": change_reference,
+        "destructive_changes": [
+            {
+                "change_id": change_id,
+                "dependencies": [],
+                "impact": "Reviewed removal has no undeclared dependent authority.",
+                "rollback": "Restore the reviewed catalog declaration and re-plan.",
+            }
+            for change_id in change_ids
+        ],
+    }, sort_keys=True))
+
+
 class LastKnownGoodRestoreTest(unittest.TestCase):
     def test_restore_reproduces_identical_catalog_and_digest(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -30,6 +78,8 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             root = directory / "repository"
             shutil.copytree(ROOT / "config", root / "config")
             shutil.copytree(ROOT / "schemas", root / "schemas")
+            shutil.copytree(ROOT / ".github", root / ".github")
+            shutil.copy2(ROOT / "component.yaml", root / "component.yaml")
             first = directory / "first.json"
             restored = directory / "restored.json"
             result = invoke("compile", "--output", str(first), root=root)
@@ -144,6 +194,38 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             self.assertNotEqual(first["digests"]["plan_file"], second["digests"]["plan_file"])
             self.assertNotEqual(first["evidence_digest"], second["evidence_digest"])
 
+    def test_destructive_dependency_analysis_must_bind_the_exact_plan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            plan_path = directory / "plan.json"
+            analysis_path = directory / "dependency-analysis.json"
+            output_path = directory / "evidence.json"
+            plan = {
+                "format_version": "1.2",
+                "terraform_version": "1.12.6",
+                "resource_changes": [{
+                    "address": 'github_repository_collaborator.direct["former-user"]',
+                    "type": "github_repository_collaborator",
+                    "change": {
+                        "actions": ["delete"],
+                        "before": {"permission": "push"},
+                        "after": None,
+                    },
+                }],
+            }
+            plan_path.write_text(json.dumps(plan))
+            write_dependency_analysis(analysis_path, plan, ["change-000001"])
+            analysis = json.loads(analysis_path.read_text())
+            analysis["plan_json_digest"] = "sha256:" + "0" * 64
+            analysis_path.write_text(json.dumps(analysis))
+            rejected = invoke(
+                "evidence", "--plan", str(plan_path), "--phase", "foundation",
+                "--change-reference", "GOV-TEST", "--destructive-change-acknowledged",
+                "--dependency-analysis", str(analysis_path), "--output", str(output_path),
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("not bound to the exact plan JSON digest", rejected.stderr)
+
     def test_evidence_identity_and_access_topology_is_marker_only(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -245,15 +327,25 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             directory = Path(temporary)
             output = directory / "evidence.json"
 
-            def evidence(changes, *extra, evidence_root=ROOT):
+            def evidence(changes, *extra, evidence_root=ROOT, destructive_review=False):
                 plan = directory / "plan.json"
-                plan.write_text(json.dumps({
+                plan_document = {
                     "format_version": "1.2", "terraform_version": "1.12.6",
                     "resource_changes": changes,
-                }))
+                }
+                plan.write_text(json.dumps(plan_document))
+                arguments = list(extra)
+                if destructive_review:
+                    analysis = directory / "dependency-analysis.json"
+                    write_dependency_analysis(analysis, plan_document, ["change-000001"])
+                    arguments.extend([
+                        "--change-reference", "GOV-TEST",
+                        "--destructive-change-acknowledged",
+                        "--dependency-analysis", str(analysis),
+                    ])
                 result = invoke(
                     "evidence", "--plan", str(plan), "--phase", "foundation",
-                    "--output", str(output), *extra, root=evidence_root,
+                    "--output", str(output), *arguments, root=evidence_root,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return json.loads(output.read_text())
@@ -285,9 +377,18 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
                 "type": "github_repository_collaborator",
                 "change": {"actions": ["delete"], "before": {"permission": "push"}, "after": None},
             }])
-            self.assertTrue(permission_reduction["decision"]["eligible_for_protected_apply"])
+            self.assertFalse(permission_reduction["decision"]["eligible_for_protected_apply"])
             self.assertIn("permission_reduction", permission_reduction["plan"]["writes"][0]["classes"])
-            self.assertEqual(permission_reduction["plan"]["destructive_change_ids"], [])
+            self.assertEqual(permission_reduction["plan"]["destructive_change_ids"], ["change-000001"])
+            self.assertTrue(permission_reduction["decision"]["requires_destructive_change_acknowledgement"])
+
+            reviewed_permission_reduction = evidence([{
+                "address": "github_repository_collaborator.direct[\"former-user\"]",
+                "type": "github_repository_collaborator",
+                "change": {"actions": ["delete"], "before": {"permission": "push"}, "after": None},
+            }], destructive_review=True)
+            self.assertTrue(reviewed_permission_reduction["decision"]["eligible_for_protected_apply"])
+            self.assertTrue(reviewed_permission_reduction["decision"]["dependency_analysis_verified"])
 
             disguised_replacement = evidence([
                 {
@@ -357,6 +458,39 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             self.assertFalse(unknown_delete["decision"]["eligible_for_protected_apply"])
             self.assertIn("destructive", unknown_delete["plan"]["writes"][0]["classes"])
 
+            reviewed_ruleset_retirement = evidence([{
+                "address": 'module.rulesets.github_organization_ruleset.this["retired-policy"]',
+                "type": "github_organization_ruleset",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {"name": "retired-policy", "enforcement": "evaluate"},
+                    "after": None,
+                },
+            }], destructive_review=True)
+            self.assertTrue(
+                reviewed_ruleset_retirement["decision"]["eligible_for_protected_apply"],
+            )
+            self.assertIn(
+                "governed_retirement",
+                reviewed_ruleset_retirement["plan"]["writes"][0]["classes"],
+            )
+
+            reviewed_repository_deletion = evidence([{
+                "address": 'module.repository_governance.github_repository.this["github-config"]',
+                "type": "github_repository",
+                "change": {
+                    "actions": ["delete"],
+                    "before": {"name": "github-config", "visibility": "private"},
+                    "after": None,
+                },
+            }], destructive_review=True)
+            self.assertFalse(
+                reviewed_repository_deletion["decision"]["eligible_for_protected_apply"],
+            )
+            self.assertIn(
+                "destructive", reviewed_repository_deletion["plan"]["writes"][0]["classes"],
+            )
+
             weakening = evidence([{
                 "address": "github_organization_ruleset.protected[\"main\"]",
                 "type": "github_organization_ruleset",
@@ -383,6 +517,38 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
                         "after": {"rules": [{
                             "type": "required_status_checks",
                             "parameters": {"required_status_checks": []},
+                        }]},
+                    },
+                },
+                {
+                    "address": "github_repository_ruleset.gate[\"authority\"]",
+                    "type": "github_repository_ruleset",
+                    "change": {
+                        "actions": ["update"],
+                        "before": {"rules": [{
+                            "required_deployments": [{
+                                "required_deployment_environments": ["platform-review", "security-review"],
+                            }],
+                            "required_status_checks": [{
+                                "strict_required_status_checks_policy": True,
+                                "do_not_enforce_on_create": False,
+                                "required_check": [
+                                    {"context": "Authority / platform", "integration_id": 0},
+                                    {"context": "Authority / security", "integration_id": 0},
+                                ],
+                            }],
+                        }]},
+                        "after": {"rules": [{
+                            "required_deployments": [{
+                                "required_deployment_environments": ["platform-review"],
+                            }],
+                            "required_status_checks": [{
+                                "strict_required_status_checks_policy": True,
+                                "do_not_enforce_on_create": False,
+                                "required_check": [
+                                    {"context": "Authority / platform", "integration_id": 0},
+                                ],
+                            }],
                         }]},
                     },
                 },
@@ -420,6 +586,80 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             self.assertNotIn("protection_weakening", environment_write["classes"])
             self.assertIn("permission_reduction", environment_write["classes"])
             self.assertEqual(sum("security_weakening" in classes for classes in shaped_classes), 2)
+            repository_ruleset_write = next(
+                write for write in provider_shaped_weakening["plan"]["writes"]
+                if write["resource_type"] == "github_repository_ruleset"
+            )
+            self.assertIn("protection_weakening", repository_ruleset_write["classes"])
+
+            deployment_policy_changes = evidence([
+                {
+                    "address": (
+                        'module.repository_environments.'
+                        'github_repository_environment_deployment_policy.this["changed"]'
+                    ),
+                    "type": "github_repository_environment_deployment_policy",
+                    "change": {
+                        "actions": ["update"],
+                        "before": {
+                            "repository": "infrastructure-live",
+                            "environment": "infrastructure-apply",
+                            "branch_pattern": "refs/pull/*/merge",
+                            "tag_pattern": None,
+                        },
+                        "after": {
+                            "repository": "infrastructure-live",
+                            "environment": "infrastructure-apply",
+                            "branch_pattern": "refs/heads/release/*",
+                            "tag_pattern": None,
+                        },
+                    },
+                },
+                {
+                    "address": (
+                        'module.repository_environments.'
+                        'github_repository_environment_deployment_policy.this["deleted"]'
+                    ),
+                    "type": "github_repository_environment_deployment_policy",
+                    "change": {
+                        "actions": ["delete"],
+                        "before": {
+                            "repository": "infrastructure-live",
+                            "environment": "infrastructure-apply",
+                            "branch_pattern": "refs/pull/*/merge",
+                            "tag_pattern": None,
+                        },
+                        "after": None,
+                    },
+                },
+                {
+                    "address": (
+                        'module.repository_environments.'
+                        'github_repository_environment_deployment_policy.this["replaced"]'
+                    ),
+                    "type": "github_repository_environment_deployment_policy",
+                    "change": {
+                        "actions": ["delete", "create"],
+                        "before": {
+                            "repository": "infrastructure-live",
+                            "environment": "infrastructure-apply",
+                            "branch_pattern": "refs/pull/*/merge",
+                            "tag_pattern": None,
+                        },
+                        "after": {
+                            "repository": "infrastructure-live",
+                            "environment": "infrastructure-apply",
+                            "branch_pattern": None,
+                            "tag_pattern": "v*",
+                        },
+                    },
+                },
+            ], "--risk-acknowledged")
+            self.assertFalse(deployment_policy_changes["decision"]["eligible_for_protected_apply"])
+            policy_writes = deployment_policy_changes["plan"]["writes"]
+            self.assertIn("protection_weakening", policy_writes[0]["classes"])
+            self.assertIn("governed_retirement", policy_writes[1]["classes"])
+            self.assertIn("replacement", policy_writes[2]["classes"])
 
             reviewer_addition = evidence([{
                 "address": "github_repository_environment.this[\"github-config:trusted-build\"]",
@@ -875,6 +1115,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             shutil.copytree(ROOT / "config", authorization_root / "config")
             shutil.copytree(ROOT / "schemas", authorization_root / "schemas")
             shutil.copytree(ROOT / ".github", authorization_root / ".github")
+            shutil.copy2(ROOT / "component.yaml", authorization_root / "component.yaml")
             outside_source = authorization_root / "config" / "outside-collaborators.yaml"
             outside_source.write_text(outside_source.read_text().replace(
                 "outside_collaborators: []",
@@ -974,16 +1215,27 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             observed = directory / "observed.json"
             self.assertEqual(invoke("compile", "--output", str(catalog)).returncode, 0)
 
-            def evidence(changes, catalog_path=catalog, evidence_root=ROOT):
-                plan.write_text(json.dumps({
+            def evidence(changes, catalog_path=catalog, evidence_root=ROOT, destructive_review=False):
+                plan_document = {
                     "format_version": "1.2",
                     "terraform_version": "1.12.6",
                     "resource_changes": changes,
-                }))
+                }
+                plan.write_text(json.dumps(plan_document))
+                destructive_arguments = []
+                if destructive_review:
+                    analysis = directory / "revocation-dependency-analysis.json"
+                    write_dependency_analysis(analysis, plan_document, ["change-000001"])
+                    destructive_arguments = [
+                        "--change-reference", "GOV-TEST",
+                        "--destructive-change-acknowledged",
+                        "--dependency-analysis", str(analysis),
+                    ]
                 result = invoke(
                     "evidence", "--plan", str(plan), "--catalog", str(catalog_path),
                     "--observed", str(observed), "--phase", "foundation",
-                    "--risk-acknowledged", "--output", str(output), root=evidence_root,
+                    "--risk-acknowledged", "--output", str(output), *destructive_arguments,
+                    root=evidence_root,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 return json.loads(output.read_text())
@@ -1054,6 +1306,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             shutil.copytree(ROOT / "config", revocation_root / "config")
             shutil.copytree(ROOT / "schemas", revocation_root / "schemas")
             shutil.copytree(ROOT / ".github", revocation_root / ".github")
+            shutil.copy2(ROOT / "component.yaml", revocation_root / "component.yaml")
             architecture = revocation_root / "config" / "teams" / "architecture.yaml"
             architecture.write_text(architecture.read_text().replace(
                 "    - login: mindclade-founder\n      role: maintainer\n", "",
@@ -1065,6 +1318,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             proved_revocation = evidence(
                 [deletion], catalog_path=revocation_catalog, evidence_root=revocation_root,
+                destructive_review=True,
             )
             self.assertTrue(proved_revocation["decision"]["eligible_for_protected_apply"])
             self.assertIn(
@@ -1085,6 +1339,264 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
                 "authority_replacement", unobserved_revocation["plan"]["writes"][0]["classes"],
             )
 
+    def test_catalog_binding_accepts_exact_actions_access_and_custom_properties(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            catalog = directory / "catalog.json"
+            plan = directory / "plan.json"
+            output = directory / "evidence.json"
+            compiled = invoke("compile", "--output", str(catalog))
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+            compiled_catalog = json.loads(catalog.read_text())
+
+            def evidence(change):
+                plan.write_text(json.dumps({
+                    "format_version": "1.2",
+                    "terraform_version": "1.12.6",
+                    "resource_changes": [change],
+                }))
+                result = invoke(
+                    "evidence", "--plan", str(plan), "--catalog", str(catalog),
+                    "--phase", "foundation", "--risk-acknowledged",
+                    "--output", str(output),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(output.read_text())
+
+            actions_access = {
+                "address": (
+                    'module.repository_governance.'
+                    'github_actions_repository_access_level.this["dot-github"]'
+                ),
+                "type": "github_actions_repository_access_level",
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {
+                        "repository": ".github",
+                        "access_level": "organization",
+                        "id": None,
+                    },
+                    "after_unknown": {"id": True},
+                },
+            }
+            exact_access = evidence(actions_access)
+            self.assertTrue(exact_access["decision"]["eligible_for_protected_apply"])
+            self.assertNotIn("unknown_change", exact_access["plan"]["writes"][0]["classes"])
+
+            overbroad_access = json.loads(json.dumps(actions_access))
+            overbroad_access["change"]["after"]["access_level"] = "enterprise"
+            denied_access = evidence(overbroad_access)
+            self.assertFalse(denied_access["decision"]["eligible_for_protected_apply"])
+            self.assertIn("unknown_change", denied_access["plan"]["writes"][0]["classes"])
+
+            owner_property = next(
+                property_definition
+                for property_definition in compiled_catalog["organization"]["custom_properties"]
+                if property_definition["name"] == "owner_team"
+            )
+            effective_owner_values = sorted(set(
+                owner_property["allowed_values"]
+                + compiled_catalog["organization"]["custom_property_migration"]
+                ["legacy_allowed_values"]["owner_team"]
+            ))
+            organization_property = {
+                "address": (
+                    'module.organization_settings.'
+                    'github_organization_custom_properties.this["owner_team"]'
+                ),
+                "type": "github_organization_custom_properties",
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {
+                        "property_name": "owner_team",
+                        "value_type": owner_property["value_type"],
+                        "required": owner_property["required"],
+                        "allowed_values": effective_owner_values,
+                        "values_editable_by": owner_property["values_editable_by"],
+                        "id": None,
+                    },
+                    "after_unknown": {"id": True},
+                },
+            }
+            preserved_property = evidence(organization_property)
+            self.assertTrue(preserved_property["decision"]["eligible_for_protected_apply"])
+            self.assertNotIn("unknown_change", preserved_property["plan"]["writes"][0]["classes"])
+
+            premature_retirement = json.loads(json.dumps(organization_property))
+            premature_retirement["change"]["after"]["allowed_values"].remove("platform")
+            denied_retirement = evidence(premature_retirement)
+            self.assertFalse(denied_retirement["decision"]["eligible_for_protected_apply"])
+            self.assertIn("unknown_change", denied_retirement["plan"]["writes"][0]["classes"])
+
+            retirement_root = directory / "retirement-root"
+            shutil.copytree(ROOT / "config", retirement_root / "config")
+            shutil.copytree(ROOT / "schemas", retirement_root / "schemas")
+            shutil.copytree(ROOT / ".github", retirement_root / ".github")
+            shutil.copy2(ROOT / "component.yaml", retirement_root / "component.yaml")
+            organization_source = retirement_root / "config" / "organization.yaml"
+            organization_source.write_text(organization_source.read_text().replace(
+                "  custom_property_migration:\n"
+                "    phase: preserve\n"
+                "    legacy_allowed_values:\n"
+                "      owner_team: [platform]\n"
+                "      ci_profile: [none]\n"
+                "      production_authority: [enterprise-control]\n",
+                "  custom_property_migration:\n"
+                "    phase: retire\n"
+                "    legacy_allowed_values: {}\n",
+            ))
+            retirement_catalog = directory / "retirement-catalog.json"
+            retirement_compile = invoke(
+                "compile", "--output", str(retirement_catalog), root=retirement_root,
+            )
+            self.assertEqual(retirement_compile.returncode, 0, retirement_compile.stderr)
+            retirement_desired = json.loads(retirement_catalog.read_text())
+            observed_assignments = {
+                "core_observation_complete": True,
+                "organization": {"id": 42, "login": "mindclade"},
+                "repositories": {
+                    repository["name"]: {"name": repository["name"]}
+                    for repository in retirement_desired["repositories"].values()
+                },
+                "repository_custom_properties": {
+                    repository["name"]: [
+                        {"property_name": name, "value": value}
+                        for name, value in repository["custom_properties"].items()
+                    ]
+                    for repository in retirement_desired["repositories"].values()
+                },
+            }
+            dot_github_properties = observed_assignments["repository_custom_properties"][".github"]
+            owner_assignment = next(
+                assignment for assignment in dot_github_properties
+                if assignment["property_name"] == "owner_team"
+            )
+            owner_assignment["value"] = "platform"
+            observed_path = directory / "retirement-observed.json"
+            retirement_change = json.loads(json.dumps(organization_property))
+            retirement_change["change"]["after"]["allowed_values"] = owner_property["allowed_values"]
+
+            def retirement_evidence():
+                plan.write_text(json.dumps({
+                    "format_version": "1.2",
+                    "terraform_version": "1.12.6",
+                    "resource_changes": [retirement_change],
+                }))
+                observed_path.write_text(json.dumps(observed_assignments))
+                result = invoke(
+                    "evidence", "--plan", str(plan), "--catalog", str(retirement_catalog),
+                    "--observed", str(observed_path), "--phase", "foundation",
+                    "--risk-acknowledged", "--output", str(output), root=retirement_root,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(output.read_text())
+
+            unqualified_retirement = retirement_evidence()
+            self.assertFalse(unqualified_retirement["decision"]["eligible_for_protected_apply"])
+            self.assertIn(
+                "unknown_change", unqualified_retirement["plan"]["writes"][0]["classes"],
+            )
+
+            owner_assignment["value"] = retirement_desired["repositories"]["dot-github"][
+                "custom_properties"
+            ]["owner_team"]
+            qualified_retirement = retirement_evidence()
+            self.assertTrue(qualified_retirement["decision"]["eligible_for_protected_apply"])
+            self.assertNotIn(
+                "unknown_change", qualified_retirement["plan"]["writes"][0]["classes"],
+            )
+
+    def test_ci_evidence_environment_variables_bind_exact_qualified_catalog_values(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            catalog_path = directory / "catalog.json"
+            plan_path = directory / "plan.json"
+            output_path = directory / "evidence.json"
+            qualified_root = directory / "qualified-root"
+            shutil.copytree(ROOT / "config", qualified_root / "config")
+            shutil.copytree(ROOT / "schemas", qualified_root / "schemas")
+            shutil.copytree(ROOT / ".github", qualified_root / ".github")
+            shutil.copy2(ROOT / "component.yaml", qualified_root / "component.yaml")
+            environment_path = (
+                qualified_root / "config" / "environments" /
+                "infrastructure-apply.yaml"
+            )
+            environment_path.write_text(environment_path.read_text().replace(
+                "  activation:\n"
+                "    state: blocked\n"
+                "    blockers:\n"
+                "      - independent-reviewer-required\n"
+                "      - protected-environment-not-qualified\n"
+                "      - ci-evidence-verifier-handoff-not-connected-qualified\n"
+                "      - infrastructure-export-verifier-handoff-not-connected-qualified\n",
+                qualified_infrastructure_apply_variables() +
+                "  activation:\n"
+                "    state: ready\n"
+                "    blockers: []\n",
+                1,
+            ))
+            compiled = invoke(
+                "compile", "--output", str(catalog_path), root=qualified_root,
+            )
+            self.assertEqual(compiled.returncode, 0, compiled.stderr)
+
+            change = {
+                "address": (
+                    "module.repository_environments."
+                    "github_actions_environment_variable.this"
+                    '["infrastructure-apply:infrastructure-live:'
+                    'CI_EVIDENCE_ARCHIVE_BUCKET"]'
+                ),
+                "type": "github_actions_environment_variable",
+                "change": {
+                    "actions": ["create"],
+                    "before": None,
+                    "after": {
+                        "repository": "infrastructure-live",
+                        "environment": "infrastructure-apply",
+                        "variable_name": "CI_EVIDENCE_ARCHIVE_BUCKET",
+                        "value": "production-ci-evidence",
+                        "id": None,
+                        "created_at": None,
+                        "updated_at": None,
+                    },
+                    "after_unknown": {
+                        "id": True,
+                        "created_at": True,
+                        "updated_at": True,
+                    },
+                },
+            }
+
+            def evidence(resource_change):
+                plan_path.write_text(json.dumps({
+                    "format_version": "1.2",
+                    "terraform_version": "1.12.6",
+                    "resource_changes": [resource_change],
+                }))
+                result = invoke(
+                    "evidence", "--plan", str(plan_path), "--catalog", str(catalog_path),
+                    "--phase", "foundation", "--risk-acknowledged",
+                    "--output", str(output_path),
+                    root=qualified_root,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(output_path.read_text())
+
+            exact = evidence(change)
+            self.assertTrue(exact["decision"]["eligible_for_protected_apply"])
+            self.assertIn("privilege_expansion", exact["plan"]["writes"][0]["classes"])
+            self.assertNotIn("unknown_change", exact["plan"]["writes"][0]["classes"])
+            self.assertNotIn("production-ci-evidence", output_path.read_text())
+
+            substituted = json.loads(json.dumps(change))
+            substituted["change"]["after"]["value"] = "unreviewed-bucket"
+            denied = evidence(substituted)
+            self.assertFalse(denied["decision"]["eligible_for_protected_apply"])
+            self.assertIn("unknown_change", denied["plan"]["writes"][0]["classes"])
+
     def test_protected_evidence_verification_requires_complete_authority_bindings(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
@@ -1103,8 +1615,9 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             result = invoke(
                 "evidence", "--plan", str(plan), "--plan-file", str(plan_file),
                 "--catalog", str(catalog), "--observed", str(observed),
-                "--change-reference", "refs/pull/1/head",
+                "--change-reference", "https://github.com/mindclade/github-config/pull/1",
                 "--workflow-ref", "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                "--oidc-issuer", "https://token.actions.githubusercontent.com",
                 "--source-sha", "a" * 40, "--workflow-sha", "b" * 40,
                 "--actor-id", "1", "--plan-app-id", "10", "--apply-app-id", "11",
                 "--run-id", "100", "--run-attempt", "1",
@@ -1112,11 +1625,77 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
                 "--wif-qualification-evidence-digest", "sha256:" + "c" * 64,
                 "--state-backend-digest", "sha256:" + "d" * 64,
                 "--executor-contract-digest", "sha256:" + "e" * 64,
+                "--review-context-digest", "sha256:" + "f" * 64,
                 "--output", str(output),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             verified = invoke("verify-evidence", "--input", str(output))
             self.assertEqual(verified.returncode, 0, verified.stderr)
+
+            private_key = directory / "evidence-private.pem"
+            public_key = directory / "evidence-public.pem"
+            signature = directory / "evidence.sig"
+            subprocess.run(
+                ["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(private_key)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["openssl", "pkey", "-in", str(private_key), "-pubout", "-out", str(public_key)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            subprocess.run(
+                ["openssl", "dgst", "-sha256", "-sign", str(private_key), "-out", str(signature), str(output)],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            public_key_digest = "sha256:" + hashlib.sha256(public_key.read_bytes()).hexdigest()
+            authenticated = invoke(
+                "verify-evidence", "--input", str(output),
+                "--signature", str(signature), "--public-key", str(public_key),
+                "--public-key-digest", public_key_digest,
+                "--kms-key-version",
+                "projects/mindclade-bootstrap/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/github-config-plan-evidence/cryptoKeyVersions/1",
+                "--signature-algorithm", "EC_SIGN_P256_SHA256", "--at-epoch", "1800000100",
+                "--require-eligible",
+                "--expected-change-reference", "https://github.com/mindclade/github-config/pull/1",
+                "--expected-review-context-digest", "sha256:" + "f" * 64,
+                "--expected-source-sha", "a" * 40,
+                "--expected-workflow-ref", "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                "--expected-workflow-sha", "b" * 40,
+            )
+            self.assertEqual(authenticated.returncode, 0, authenticated.stderr)
+            wrong_key_authority = invoke(
+                "verify-evidence", "--input", str(output),
+                "--signature", str(signature), "--public-key", str(public_key),
+                "--public-key-digest", public_key_digest,
+                "--kms-key-version",
+                "projects/mindclade-bootstrap/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/recovery-evidence/cryptoKeyVersions/1",
+                "--signature-algorithm", "EC_SIGN_P256_SHA256", "--at-epoch", "1800000100",
+                "--require-eligible",
+                "--expected-change-reference", "https://github.com/mindclade/github-config/pull/1",
+                "--expected-review-context-digest", "sha256:" + "f" * 64,
+                "--expected-source-sha", "a" * 40,
+                "--expected-workflow-ref", "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                "--expected-workflow-sha", "b" * 40,
+            )
+            self.assertNotEqual(wrong_key_authority.returncode, 0)
+            self.assertIn("bootstrap-signing/github-config-plan-evidence", wrong_key_authority.stderr)
+            signature.write_bytes(signature.read_bytes()[:-1] + bytes([signature.read_bytes()[-1] ^ 1]))
+            rejected_signature = invoke(
+                "verify-evidence", "--input", str(output),
+                "--signature", str(signature), "--public-key", str(public_key),
+                "--public-key-digest", public_key_digest,
+                "--kms-key-version",
+                "projects/mindclade-bootstrap/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/github-config-plan-evidence/cryptoKeyVersions/1",
+                "--signature-algorithm", "EC_SIGN_P256_SHA256", "--at-epoch", "1800000100",
+                "--require-eligible",
+                "--expected-change-reference", "https://github.com/mindclade/github-config/pull/1",
+                "--expected-review-context-digest", "sha256:" + "f" * 64,
+                "--expected-source-sha", "a" * 40,
+                "--expected-workflow-ref", "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                "--expected-workflow-sha", "b" * 40,
+            )
+            self.assertNotEqual(rejected_signature.returncode, 0)
+            self.assertIn("signature verification failed", rejected_signature.stderr)
 
             forged = json.loads(output.read_text())
             forged.pop("evidence_digest")
@@ -1235,13 +1814,15 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             self.assertNotEqual(incomplete.returncode, 0)
             missing_observed = invoke(
                 "evidence", "--plan", str(plan), "--catalog", str(catalog),
-                "--organization", "mindclade", "--change-reference", "refs/pull/1/head",
+                "--organization", "mindclade", "--change-reference", "https://github.com/mindclade/github-config/pull/1",
                 "--workflow-ref", "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                "--oidc-issuer", "https://token.actions.githubusercontent.com",
                 "--source-sha", "a" * 40, "--workflow-sha", "b" * 40, "--actor-id", "1",
                 "--plan-app-id", "10", "--apply-app-id", "11", "--output", str(output),
                 "--wif-qualification-evidence-digest", "sha256:" + "c" * 64,
                 "--state-backend-digest", "sha256:" + "d" * 64,
                 "--executor-contract-digest", "sha256:" + "e" * 64,
+                "--review-context-digest", "sha256:" + "f" * 64,
             )
             self.assertNotEqual(missing_observed.returncode, 0)
             self.assertIn("requires --observed", missing_observed.stderr)

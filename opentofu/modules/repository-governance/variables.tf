@@ -1,11 +1,12 @@
 variable "repositories" {
   description = "Repositories keyed by stable catalog identifier."
   type = map(object({
-    name               = string
-    description        = string
-    visibility         = string
-    archived           = bool
-    archive_on_destroy = bool
+    name                 = string
+    description          = string
+    visibility           = string
+    actions_access_level = string
+    archived             = bool
+    archive_on_destroy   = bool
     features = object({
       issues      = bool
       projects    = bool
@@ -45,11 +46,12 @@ variable "repositories" {
     condition = alltrue([
       for repository in values(var.repositories) :
       contains(["private", "internal", "public"], repository.visibility) &&
+      contains(["none", "organization"], repository.actions_access_level) &&
       contains(["PR_TITLE", "COMMIT_OR_PR_TITLE"], repository.merge_policy.squash_merge_commit_title) &&
       contains(["PR_BODY", "COMMIT_MESSAGES", "BLANK"], repository.merge_policy.squash_merge_commit_message) &&
       length(repository.direct_collaborators) == 0
     ])
-    error_message = "Repositories require valid visibility/squash-commit policy and may not declare direct collaborators."
+    error_message = "Repositories require valid visibility, Actions access, and squash-commit policy and may not declare direct collaborators."
   }
 
   validation {

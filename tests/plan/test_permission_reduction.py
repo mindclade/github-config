@@ -39,6 +39,58 @@ class PermissionReductionTest(unittest.TestCase):
             for grant in repository["team_grants"]:
                 self.assertIn(grant["permission"], rank, name)
                 self.assertLessEqual(rank[grant["permission"]], rank["maintain"], name)
+            expected_access = "organization" if repository["name"] == ".github" else "none"
+            self.assertEqual(repository["actions_access_level"], expected_access, name)
+        dot_github = catalog["repositories"]["dot-github"]
+        grants = {grant["team"]: grant["permission"] for grant in dot_github["team_grants"]}
+        self.assertEqual(grants["developer-platform"], "maintain")
+        self.assertGreaterEqual(rank[grants["security"]], rank["push"])
+        self.assertEqual(catalog["teams"]["developer-platform"]["privacy"], "closed")
+        self.assertEqual(catalog["teams"]["security"]["privacy"], "closed")
+        self.assertEqual(catalog["organization"]["custom_property_migration"]["phase"], "preserve")
+
+        allowed_pins = {
+            action["source"]: action["commit"]
+            for action in catalog["actions_policy"]["allowed_actions"]
+        }
+        self.assertEqual(allowed_pins["actions/dependency-review-action"],
+                         "a1d282b36b6f3519aa1f3fc636f609c47dddb294")
+        self.assertEqual(allowed_pins["github/codeql-action"],
+                         "cdf488f595d80d6e07e03d4674febd5ab45fa938")
+        self.assertEqual(allowed_pins["google-github-actions/setup-gcloud"],
+                         "aa5489c8933f4cc7a4f7d45035b3b1440c9c10db")
+        self.assertEqual(allowed_pins["actions/attest-build-provenance"],
+                         "4d101475d8b20a2381f78447822ac1eab6504dd8")
+        self.assertEqual(allowed_pins["actions/setup-go"],
+                         "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e")
+        self.assertEqual(allowed_pins["actions/setup-python"],
+                         "5fda3b95a4ea91299a34e894583c3862153e4b97")
+
+        subjects = {
+            subject["id"]: subject
+            for subject in catalog["oidc_policy"]["subjects"]
+            if subject["id"].startswith("infrastructure-live-")
+        }
+        expected_ids = {
+            f"infrastructure-live-{environment}-{capability}"
+            for environment in ("development", "staging", "production", "restricted")
+            for capability in ("plan", "apply")
+        }
+        self.assertEqual(set(subjects), expected_ids)
+        bindings = set()
+        for subject_id, subject in subjects.items():
+            identity = subject_id.removeprefix("infrastructure-live-")
+            capability = identity.rsplit("-", 1)[1]
+            self.assertEqual(subject["repository"], "infrastructure-live")
+            self.assertEqual(subject["workflow"], ".github/workflows/protected-apply.yml")
+            self.assertEqual(subject["context"], {
+                "type": "environment",
+                "value": "trusted-build" if capability == "plan" else "infrastructure-apply",
+            })
+            self.assertEqual(subject["workload_identity_provider_ref"], identity)
+            self.assertEqual(subject["service_account_ref"], identity)
+            bindings.add((subject["workload_identity_provider_ref"], subject["service_account_ref"]))
+        self.assertEqual(len(bindings), 8)
 
     def test_aliases_do_not_satisfy_distinct_human_preflight(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -77,6 +129,7 @@ class PermissionReductionTest(unittest.TestCase):
             self.assertIn("INSUFFICIENT_DISTINCT_HUMANS", codes)
             self.assertIn("DESIRED_ACTIVATION_BLOCKED", codes)
             self.assertIn("REVIEWER_QUORUM_UNSATISFIED", codes)
+            self.assertIn("CUSTOM_PROPERTY_MIGRATION_PENDING", codes)
             self.assertFalse(report["eligible"])
 
             adopt = invoke(
@@ -191,6 +244,59 @@ class PermissionReductionTest(unittest.TestCase):
             codes = {item["code"] for item in json.loads(report_path.read_text())["blockers"]}
             self.assertIn("MANAGED_STATE_NOT_CONVERGED", codes)
             self.assertIn("OIDC_IDENTITY_INCOMPLETE", codes)
+            self.assertIn("CUSTOM_PROPERTY_MIGRATION_PENDING", codes)
+
+    def test_custom_property_retirement_requires_observed_assignment_convergence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            catalog, catalog_path = self.compile_catalog(directory)
+            catalog["organization"]["custom_property_migration"] = {
+                "phase": "retire", "legacy_allowed_values": {},
+            }
+            catalog_path.write_text(json.dumps(catalog))
+            observed = {
+                "core_observation_complete": True,
+                "observation_complete": True,
+                "errors": [],
+                "organization": {"login": catalog["organization"]["organization_login"]},
+                "repositories": {
+                    repository["name"]: {"name": repository["name"]}
+                    for repository in catalog["repositories"].values()
+                },
+                "repository_custom_properties": {
+                    repository["name"]: [
+                        {"property_name": name, "value": value}
+                        for name, value in repository["custom_properties"].items()
+                    ]
+                    for repository in catalog["repositories"].values()
+                },
+            }
+            first_repository = next(iter(observed["repository_custom_properties"].values()))
+            first_repository[0]["value"] = "legacy-value"
+            observed_path = directory / "observed.json"
+            report_path = directory / "preflight.json"
+            observed_path.write_text(json.dumps(observed))
+            blocked = invoke(
+                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
+                "--phase", "foundation", "--output", str(report_path),
+            )
+            self.assertEqual(blocked.returncode, 2, blocked.stderr)
+            self.assertIn(
+                "CUSTOM_PROPERTY_RETIREMENT_UNQUALIFIED",
+                {item["code"] for item in json.loads(report_path.read_text())["blockers"]},
+            )
+
+            repository = next(iter(catalog["repositories"].values()))
+            first_repository[0]["value"] = repository["custom_properties"][first_repository[0]["property_name"]]
+            observed_path.write_text(json.dumps(observed))
+            invoke(
+                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
+                "--phase", "foundation", "--output", str(report_path),
+            )
+            self.assertNotIn(
+                "CUSTOM_PROPERTY_RETIREMENT_UNQUALIFIED",
+                {item["code"] for item in json.loads(report_path.read_text())["blockers"]},
+            )
 
     def test_adoption_maps_are_derived_only_from_authoritative_live_bindings(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -199,6 +305,8 @@ class PermissionReductionTest(unittest.TestCase):
             claims = catalog["oidc_policy"]["include_claim_keys"]
             members = catalog["members"]
             managed_property = catalog["organization"]["custom_properties"][0]
+            ruleset_key, ruleset = next(iter(catalog["rulesets"].items()))
+            ruleset_name = ruleset.get("name") or ruleset_key
             observed = {
                 "core_observation_complete": True,
                 "observation_complete": True,
@@ -211,6 +319,9 @@ class PermissionReductionTest(unittest.TestCase):
                         "use_immutable_subject": True,
                     },
                 },
+                "repository_actions_access_levels": {
+                    "github-config": {"access_level": "none"},
+                },
                 "members": [{"login": member["login"]} for member in members],
                 "organization_admins": [{"login": member["login"]} for member in members],
                 "teams": {"security": {"id": 10, "name": "security", "slug": "security"}},
@@ -220,6 +331,9 @@ class PermissionReductionTest(unittest.TestCase):
                 "repositories": {
                     repository["name"]: {"id": 20 + index, "name": repository["name"]}
                     for index, repository in enumerate(catalog["repositories"].values())
+                },
+                "rulesets": {
+                    ruleset_name: {"id": 31, "name": ruleset_name, "enforcement": "active"},
                 },
                 "repository_team_grants": {
                     "github-config": [{"slug": "security", "permission": "maintain"}],
@@ -244,12 +358,22 @@ class PermissionReductionTest(unittest.TestCase):
                 "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
                 "--phase", "adopt", "--output", str(report_path),
             )
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(
+                result.returncode,
+                0,
+                json.dumps(json.loads(report_path.read_text()), indent=2),
+            )
             report = json.loads(report_path.read_text())
             self.assertEqual(report["adopted_team_ids"]["security"], 10)
             self.assertEqual(report["adopted_repository_names"]["github-config"], "github-config")
+            self.assertEqual(report["adopted_ruleset_ids"], {ruleset_key: 31})
+            self.assertEqual(report["adopted_ruleset_enforcements"], {ruleset_key: "active"})
             self.assertEqual(report["adopted_organization_oidc_templates"], {"organization": "mindclade"})
             self.assertEqual(report["adopted_repository_oidc_templates"], {"github-config": "github-config"})
+            self.assertEqual(
+                report["adopted_repository_actions_access_levels"],
+                {"github-config": "github-config"},
+            )
             self.assertEqual(report["adopted_memberships"][members[0]["login"]], f"mindclade:{members[0]['login']}")
             self.assertEqual(
                 report["adopted_team_memberships"][f"security:{members[0]['login']}"],
@@ -301,7 +425,14 @@ class PermissionReductionTest(unittest.TestCase):
             canonical_attestation = json.dumps(attestation, sort_keys=True, indent=2) + "\n"
             digest = "sha256:" + hashlib.sha256(canonical_attestation.encode()).hexdigest()
             desired = {
-                "organization": {"organization_login": "mindclade", "two_factor_requirement": False},
+                "organization": {
+                    "organization_login": "mindclade",
+                    "two_factor_requirement": False,
+                    "custom_property_migration": {
+                        "phase": "retire",
+                        "legacy_allowed_values": {},
+                    },
+                },
                 "security_policy": {"required_capabilities": []},
                 "members": [
                     {"login": "admin-one", "role": "admin", "principal_id": "one", "active": True},
@@ -340,6 +471,9 @@ class PermissionReductionTest(unittest.TestCase):
                 "members": [{"login": "admin-one"}, {"login": "admin-two"}],
                 "organization_admins": [{"login": "admin-one"}, {"login": "admin-two"}],
                 "repositories": {"repo": {"id": 2, "name": "repo"}},
+                "repository_custom_properties": {
+                    "repo": [{"property_name": "owner_team", "value": "owner"}],
+                },
                 "managed_projection": {},
                 "managed_state_matches_desired": True,
                 "capabilities": {},
@@ -371,6 +505,47 @@ class PermissionReductionTest(unittest.TestCase):
             self.assertIn(
                 "INSTALLATION_INVENTORY_UNQUALIFIED",
                 {item["code"] for item in qualified_report["blockers"]},
+            )
+
+            inventory_qualification = {
+                "state": "qualified",
+                "authority": "bootstrap",
+                "source_sha": "b" * 40,
+                "workflow_ref": "mindclade/bootstrap/.github/workflows/protected-apply.yml@" + "b" * 40,
+                "created_at": now.isoformat().replace("+00:00", "Z"),
+                "expires_at": (now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+                "installations": [{
+                    "app_slug": "app",
+                    "app_id": 123,
+                    "installation_id": 456,
+                    "disposition": "catalog",
+                    "integration_id": "app",
+                    "integration_evidence_digest": digest,
+                }],
+            }
+            canonical_inventory = json.dumps(inventory_qualification, sort_keys=True, indent=2) + "\n"
+            inventory_qualification["evidence_digest"] = (
+                "sha256:" + hashlib.sha256(canonical_inventory.encode()).hexdigest()
+            )
+            desired["organization"]["installation_inventory_qualification"] = inventory_qualification
+            observed["installation_inventory"] = {
+                "api_inventory_complete": True,
+                "total_count": 1,
+            }
+            desired_path.write_text(json.dumps(desired))
+            observed_path.write_text(json.dumps(observed))
+            result = invoke(
+                "preflight", "--desired", str(desired_path), "--observed", str(observed_path),
+                "--phase", "enforce", "--output", str(report_path),
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                json.dumps(json.loads(report_path.read_text()), indent=2),
+            )
+            self.assertNotIn(
+                "INSTALLATION_INVENTORY_UNQUALIFIED",
+                {item["code"] for item in json.loads(report_path.read_text())["blockers"]},
             )
 
             observed["repositories"]["repo"]["id"] = 3

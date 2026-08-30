@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       change_reference:
-        description: Approved pull request, issue, or change record
+        description: Canonical URL of the merged github-config pull request
         required: true
         type: string
       phase:
@@ -25,9 +25,20 @@ on:
         required: true
         default: false
         type: boolean
+      acknowledge_destructive_changes:
+        description: Confirm the reviewed change record explicitly approves every removal in the exact plan
+        required: true
+        default: false
+        type: boolean
+      dependency_analysis_json:
+        description: Exact-plan-bound DependencyAnalysis JSON; required only when the plan contains removals
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: github-governance-apply
@@ -51,6 +62,10 @@ jobs:
       wif_qualification_evidence_digest: ${{ steps.activation-gate.outputs.wif_qualification_evidence_digest }}
       wif_qualification_expires_epoch: ${{ steps.activation-gate.outputs.wif_qualification_expires_epoch }}
       wif_qualified_source_sha: ${{ steps.activation-gate.outputs.wif_qualified_source_sha }}
+      review_context_digest: ${{ steps.activation-gate.outputs.review_context_digest }}
+      plan_evidence_kms_key_version: ${{ steps.activation-gate.outputs.plan_evidence_kms_key_version }}
+      plan_evidence_kms_algorithm: ${{ steps.activation-gate.outputs.plan_evidence_kms_algorithm }}
+      plan_evidence_public_key_digest: ${{ steps.activation-gate.outputs.plan_evidence_public_key_digest }}
     steps:
       - name: Reject an unqualified activation
         id: activation-gate
@@ -62,7 +77,12 @@ jobs:
           APPLY_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_APPLY }}
           APPLY_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_APPLY }}
           CHANGE_REFERENCE: ${{ inputs.change_reference }}
+          CHANGE_REVIEWER_ACTOR_IDS: ${{ vars.GHCFG_CHANGE_REVIEWER_ACTOR_IDS }}
+          CODEOWNER_REVIEWER_ACTOR_IDS: ${{ vars.GHCFG_CODEOWNER_REVIEWER_ACTOR_IDS }}
+          DEPENDENCY_ANALYSIS_JSON: ${{ inputs.dependency_analysis_json }}
+          DESTRUCTIVE_CHANGE_ACKNOWLEDGED: ${{ inputs.acknowledge_destructive_changes }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          ENVIRONMENT_APPROVER_ACTOR_IDS: ${{ vars.GHCFG_ENVIRONMENT_APPROVER_ACTOR_IDS }}
           FOUNDATION_READY: ${{ vars.GHCFG_FOUNDATION_READY }}
           GH_TOKEN: ${{ github.token }}
           PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
@@ -70,8 +90,16 @@ jobs:
           PLAN_APP_KEY_SECRET: ${{ vars.GHCFG_PLAN_APP_KEY_SECRET }}
           PLAN_SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
           PLAN_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+          PLAN_EVIDENCE_KEY_QUALIFICATION_EVIDENCE_DIGEST: ${{ vars.GHCFG_PLAN_EVIDENCE_KEY_QUALIFICATION_EVIDENCE_DIGEST }}
+          PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH: ${{ vars.GHCFG_PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH }}
+          PLAN_EVIDENCE_KEY_QUALIFIED_SOURCE_SHA: ${{ vars.GHCFG_PLAN_EVIDENCE_KEY_QUALIFIED_SOURCE_SHA }}
+          PLAN_EVIDENCE_KMS_ALGORITHM: ${{ vars.GHCFG_PLAN_EVIDENCE_KMS_ALGORITHM }}
+          PLAN_EVIDENCE_KMS_KEY_VERSION: ${{ vars.GHCFG_PLAN_EVIDENCE_KMS_KEY_VERSION }}
+          PLAN_EVIDENCE_PUBLIC_KEY_DIGEST: ${{ vars.GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_DIGEST }}
+          PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64: ${{ vars.GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64 }}
           ROLLOUT_PHASE: ${{ inputs.phase }}
           RISK_ACKNOWLEDGED: ${{ inputs.acknowledge_privilege_expansion }}
+          REVIEW_ROSTER_QUALIFICATION_DIGEST: ${{ vars.GHCFG_REVIEW_ROSTER_QUALIFICATION_DIGEST }}
           STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
           STATE_BACKEND_EVIDENCE_DIGEST: ${{ vars.GHCFG_STATE_BACKEND_EVIDENCE_DIGEST }}
           STATE_PREFIX: ${{ vars.GHCFG_STATE_PREFIX }}
@@ -89,10 +117,129 @@ jobs:
             echo "expected_sha must be the exact checked-out main SHA." >&2
             exit 1
           fi
-          if [[ ! "$CHANGE_REFERENCE" =~ [^[:space:]] ]]; then
-            echo "change_reference must identify an approved change record." >&2
+          if [[ ! "$CHANGE_REFERENCE" =~ ^https://github\.com/mindclade/github-config/pull/([1-9][0-9]*)$ ]]; then
+            echo "change_reference must be the canonical URL of a merged github-config pull request." >&2
             exit 1
           fi
+          pull_number="${BASH_REMATCH[1]}"
+          canonical_ids() {
+            local value="$1"
+            if [[ ! "$value" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]; then
+              return 1
+            fi
+            tr ',' '\n' <<< "$value" | sort -n -u | paste -sd, -
+          }
+          change_reviewer_ids="$(canonical_ids "$CHANGE_REVIEWER_ACTOR_IDS")"
+          codeowner_reviewer_ids="$(canonical_ids "$CODEOWNER_REVIEWER_ACTOR_IDS")"
+          environment_approver_ids="$(canonical_ids "$ENVIRONMENT_APPROVER_ACTOR_IDS")"
+          test "$change_reviewer_ids" = "$CHANGE_REVIEWER_ACTOR_IDS"
+          test "$codeowner_reviewer_ids" = "$CODEOWNER_REVIEWER_ACTOR_IDS"
+          test "$environment_approver_ids" = "$ENVIRONMENT_APPROVER_ACTOR_IDS"
+          [[ "$REVIEW_ROSTER_QUALIFICATION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          roster_digest="sha256:$(
+            jq -S -n \
+              --arg change_reviewers "$change_reviewer_ids" \
+              --arg codeowners "$codeowner_reviewer_ids" \
+              --arg environment_approvers "$environment_approver_ids" '
+                {
+                  version: "github-config-review-rosters/v1",
+                  change_reviewer_actor_ids: ($change_reviewers | split(",") | map(tonumber)),
+                  codeowner_reviewer_actor_ids: ($codeowners | split(",") | map(tonumber)),
+                  environment_approver_actor_ids: ($environment_approvers | split(",") | map(tonumber))
+                }
+              ' | sha256sum | cut -d' ' -f1
+          )"
+          test "$roster_digest" = "$REVIEW_ROSTER_QUALIFICATION_DIGEST"
+          if comm -12 \
+            <(tr ',' '\n' <<< "$change_reviewer_ids" | sort -n) \
+            <(tr ',' '\n' <<< "$environment_approver_ids" | sort -n) \
+            | grep -q .; then
+            echo "Pull-request reviewers and protected-environment approvers must be disjoint actors." >&2
+            exit 1
+          fi
+          pull_json="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pull_number")"
+          jq -e \
+            --arg change_reference "$CHANGE_REFERENCE" \
+            --arg expected_sha "$EXPECTED_SHA" \
+            --argjson pull_number "$pull_number" \
+            --arg repository "$GITHUB_REPOSITORY" '
+              .number == $pull_number
+              and .html_url == $change_reference
+              and .state == "closed"
+              and .merged_at != null
+              and .merge_commit_sha == $expected_sha
+              and .base.ref == "main"
+              and .base.repo.full_name == $repository
+              and .head.repo != null
+              and (.head.sha | type) == "string"
+              and (.head.sha | test("^[0-9a-f]{40}$"))
+              and (.user.id | type) == "number"
+              and .user.id > 0
+            ' <<< "$pull_json" > /dev/null
+          pull_head_sha="$(jq -r .head.sha <<< "$pull_json")"
+          reviews_json="$(
+            gh api --paginate --slurp \
+              "repos/$GITHUB_REPOSITORY/pulls/$pull_number/reviews?per_page=100"
+          )"
+          latest_reviews="$(
+            jq -c '
+              add
+              | map(select(.user != null and (.user.id | type) == "number"))
+              | sort_by(.user.id, .submitted_at, .id)
+              | group_by(.user.id)
+              | map(last)
+            ' <<< "$reviews_json"
+          )"
+          if jq -e 'any(.state == "CHANGES_REQUESTED")' <<< "$latest_reviews" > /dev/null; then
+            echo "The merged change has a latest CHANGES_REQUESTED review." >&2
+            exit 1
+          fi
+          approved_ids="$(
+            jq -r --arg pull_head_sha "$pull_head_sha" \
+              '[.[] | select(.state == "APPROVED" and .commit_id == $pull_head_sha) | .user.id]
+                | unique | sort | join(",")' \
+              <<< "$latest_reviews"
+          )"
+          approved_ids="$(canonical_ids "$approved_ids")"
+          if (( $(tr ',' '\n' <<< "$approved_ids" | wc -l) < 2 )); then
+            echo "The merged change requires at least two distinct approving actors." >&2
+            exit 1
+          fi
+          while IFS= read -r actor_id; do
+            grep -qx "$actor_id" <(tr ',' '\n' <<< "$change_reviewer_ids")
+          done < <(tr ',' '\n' <<< "$approved_ids")
+          if ! comm -12 \
+            <(tr ',' '\n' <<< "$approved_ids" | sort -n) \
+            <(tr ',' '\n' <<< "$codeowner_reviewer_ids" | sort -n) \
+            | grep -q .; then
+            echo "The merged change lacks an approval from a qualified CODEOWNER-equivalent actor." >&2
+            exit 1
+          fi
+          if grep -qx "$GITHUB_ACTOR_ID" <(tr ',' '\n' <<< "$approved_ids"); then
+            echo "The workflow dispatcher must not be one of the pull-request approving actors." >&2
+            exit 1
+          fi
+          review_context_digest="sha256:$(
+            jq -S -n \
+              --arg change_reference "$CHANGE_REFERENCE" \
+              --arg approved_ids "$approved_ids" \
+              --arg expected_sha "$EXPECTED_SHA" \
+              --arg pull_head_sha "$pull_head_sha" \
+              --argjson pull_number "$pull_number" \
+              --arg roster_digest "$roster_digest" '
+                {
+                  version: "github-config-merged-review/v1",
+                  repository: "mindclade/github-config",
+                  pull_number: $pull_number,
+                  change_reference: $change_reference,
+                  merge_commit_sha: $expected_sha,
+                  reviewed_pull_head_sha: $pull_head_sha,
+                  approved_actor_ids: ($approved_ids | split(",") | map(tonumber)),
+                  review_roster_qualification_digest: $roster_digest,
+                  reviewer_environment_approver_separation: true
+                }
+              ' | sha256sum | cut -d' ' -f1
+          )"
           case "$ROLLOUT_PHASE" in
             adopt|foundation)
               if [[ "$FOUNDATION_READY" != "true" ]]; then
@@ -110,6 +257,11 @@ jobs:
           esac
           if [[ "$ROLLOUT_PHASE" == "adopt" && "$RISK_ACKNOWLEDGED" != "false" ]]; then
             echo "Adoption cannot carry a privilege-expansion acknowledgement." >&2
+            exit 1
+          fi
+          if [[ "$ROLLOUT_PHASE" == "adopt" ]] &&
+            { [[ "$DESTRUCTIVE_CHANGE_ACKNOWLEDGED" != "false" ]] || [[ -n "$DEPENDENCY_ANALYSIS_JSON" ]]; }; then
+            echo "Adoption cannot carry destructive-change review evidence." >&2
             exit 1
           fi
           if [[ ! "$PLAN_APP_ID" =~ ^[0-9]+$ || ! "$APPLY_APP_ID" =~ ^[0-9]+$ || "$PLAN_APP_ID" == "$APPLY_APP_ID" ]]; then
@@ -195,6 +347,45 @@ jobs:
             echo "The WIF source qualification must be unexpired and no more than seven days ahead." >&2
             exit 1
           fi
+          if [[ ! "$PLAN_EVIDENCE_KMS_KEY_VERSION" =~ ^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/github-config-plan-evidence/cryptoKeyVersions/[1-9][0-9]*$ ]] ||
+            [[ "$PLAN_EVIDENCE_KMS_ALGORITHM" != "EC_SIGN_P256_SHA256" ]]; then
+            echo "An exact bootstrap-owned P-256 KMS key version is required for plan evidence." >&2
+            exit 1
+          fi
+          [[ "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PLAN_EVIDENCE_KEY_QUALIFICATION_EVIDENCE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH" =~ ^[0-9]+$ ]]
+          test "$PLAN_EVIDENCE_KEY_QUALIFIED_SOURCE_SHA" = "$EXPECTED_SHA"
+          (( PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH > current_epoch ))
+          (( PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH <= maximum_expiry ))
+          test -n "$PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64"
+          public_key_path="$RUNNER_TEMP/qualified-plan-evidence-public-key.pem"
+          printf '%s' "$PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64" | base64 --decode > "$public_key_path"
+          test "$(base64 -w0 "$public_key_path")" = "$PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64"
+          actual_public_key_digest="sha256:$(sha256sum "$public_key_path" | cut -d' ' -f1)"
+          test "$actual_public_key_digest" = "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST"
+          actual_key_qualification_digest="sha256:$(
+            jq -S -n \
+              --arg algorithm "$PLAN_EVIDENCE_KMS_ALGORITHM" \
+              --arg evidence_expires_epoch "$PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH" \
+              --arg kms_key_version "$PLAN_EVIDENCE_KMS_KEY_VERSION" \
+              --arg oidc_issuer "https://token.actions.githubusercontent.com" \
+              --arg public_key_digest "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST" \
+              --arg source_sha "$PLAN_EVIDENCE_KEY_QUALIFIED_SOURCE_SHA" \
+              --arg workflow_ref "$GITHUB_WORKFLOW_REF" '
+                {
+                  version: "github-config-plan-evidence-key-qualification/v1",
+                  kms_key_version: $kms_key_version,
+                  signature_algorithm: $algorithm,
+                  public_key_digest: $public_key_digest,
+                  oidc_issuer: $oidc_issuer,
+                  workflow_ref: $workflow_ref,
+                  source_sha: $source_sha,
+                  qualification_expires_epoch: ($evidence_expires_epoch | tonumber)
+                }
+              ' | sha256sum | cut -d' ' -f1
+          )"
+          test "$actual_key_qualification_digest" = "$PLAN_EVIDENCE_KEY_QUALIFICATION_EVIDENCE_DIGEST"
           current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq .object.sha)"
           if [[ "$current_main" != "$EXPECTED_SHA" ]]; then
             echo "expected_sha is not the current protected main revision." >&2
@@ -206,6 +397,10 @@ jobs:
             echo "wif_qualification_evidence_digest=$WIF_QUALIFICATION_EVIDENCE_DIGEST"
             echo "wif_qualification_expires_epoch=$WIF_QUALIFICATION_EXPIRES_EPOCH"
             echo "wif_qualified_source_sha=$WIF_QUALIFIED_SOURCE_SHA"
+            echo "review_context_digest=$review_context_digest"
+            echo "plan_evidence_kms_key_version=$PLAN_EVIDENCE_KMS_KEY_VERSION"
+            echo "plan_evidence_kms_algorithm=$PLAN_EVIDENCE_KMS_ALGORITHM"
+            echo "plan_evidence_public_key_digest=$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST"
           } >> "$GITHUB_OUTPUT"
 
       - name: Check out the exact source revision
@@ -440,6 +635,9 @@ jobs:
           create_credentials_file: true
           export_environment_variables: true
 
+      - name: Configure the pinned Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
       - name: Read the plan App key
         id: app-key
         uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
@@ -546,6 +744,72 @@ jobs:
             echo "WIF_QUALIFICATION_EVIDENCE_DIGEST=$WIF_QUALIFICATION_EVIDENCE_DIGEST"
           } >> "$GITHUB_ENV"
 
+      - name: Fetch and validate exact canonical workflow authorities
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          authority_root="$RUNNER_TEMP/canonical-workflow-authorities"
+          test ! -e "$authority_root"
+          install -d -m 0700 "$authority_root"
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            compile --root "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/authority-catalog.json"
+          while IFS=$'\t' read -r repository revision implementation_revision state; do
+            if [[ "$state" != "reviewed" ]]; then
+              continue
+            fi
+            [[ "$repository" =~ ^(\.github|bootstrap|infrastructure-live|gitops|mindclade)$ ]]
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+            if [[ "$repository" == ".github" ]]; then
+              [[ "$implementation_revision" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$implementation_revision" != "$revision" ]]
+            else
+              [[ "$implementation_revision" == "-" ]]
+            fi
+            destination="$authority_root/$repository"
+            gh repo clone "mindclade/$repository" "$destination" -- \
+              --filter=blob:none --no-checkout
+            git -C "$destination" fetch --no-tags origin \
+              "+refs/heads/main:refs/remotes/origin/main"
+            git -C "$destination" fetch --no-tags origin "$revision"
+            git -C "$destination" merge-base --is-ancestor \
+              "$revision" refs/remotes/origin/main
+            if [[ "$implementation_revision" != "-" ]]; then
+              git -C "$destination" fetch --no-tags origin "$implementation_revision"
+              git -C "$destination" merge-base --is-ancestor \
+                "$implementation_revision" "$revision"
+              implementation_destination="$authority_root/.github-implementation"
+              test ! -e "$implementation_destination"
+              gh repo clone "mindclade/$repository" "$implementation_destination" -- \
+                --filter=blob:none --no-checkout
+              git -C "$implementation_destination" fetch --no-tags origin \
+                "+refs/heads/main:refs/remotes/origin/main"
+              git -C "$implementation_destination" fetch --no-tags origin \
+                "$implementation_revision"
+              git -C "$implementation_destination" merge-base --is-ancestor \
+                "$implementation_revision" refs/remotes/origin/main
+              git -C "$implementation_destination" checkout --detach "$implementation_revision"
+              test "$(git -C "$implementation_destination" rev-parse HEAD)" = "$implementation_revision"
+            fi
+            git -C "$destination" checkout --detach "$revision"
+            test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
+          done < <(
+            jq -r '.actions_policy.authority_inventories[]
+              | [.repository, .revision, (.implementation_revision // "-"), .activation.state] | @tsv' \
+              "$RUNNER_TEMP/authority-catalog.json"
+          )
+          export MINDCLADE_AUTHORITY_ROOT="$authority_root"
+          export MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES=1
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            validate --root "$GITHUB_WORKSPACE" > /dev/null
+          {
+            echo "MINDCLADE_AUTHORITY_ROOT=$authority_root"
+            echo "MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES=1"
+          } >> "$GITHUB_ENV"
+
       - name: Compile, observe, and pass connected preflight
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -567,8 +831,15 @@ jobs:
         env:
           APPLY_APP_ID: ${{ vars.GHCFG_APPLY_APP_ID }}
           CHANGE_REFERENCE: ${{ inputs.change_reference }}
+          DEPENDENCY_ANALYSIS_JSON: ${{ inputs.dependency_analysis_json }}
+          DESTRUCTIVE_CHANGE_ACKNOWLEDGED: ${{ inputs.acknowledge_destructive_changes }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          PLAN_EVIDENCE_KMS_ALGORITHM: ${{ needs.source-gate.outputs.plan_evidence_kms_algorithm }}
+          PLAN_EVIDENCE_KMS_KEY_VERSION: ${{ needs.source-gate.outputs.plan_evidence_kms_key_version }}
+          PLAN_EVIDENCE_PUBLIC_KEY_DIGEST: ${{ needs.source-gate.outputs.plan_evidence_public_key_digest }}
+          PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64: ${{ vars.GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64 }}
+          REVIEW_CONTEXT_DIGEST: ${{ needs.source-gate.outputs.review_context_digest }}
           RISK_ACKNOWLEDGED: ${{ inputs.acknowledge_privilege_expansion }}
           TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
           TF_STATE_PREFIX: ${{ vars.GHCFG_STATE_PREFIX }}
@@ -589,10 +860,12 @@ jobs:
                 adopted_organization_custom_properties: ($preflight[0].adopted_organization_custom_properties // {}),
                 adopted_organization_oidc_templates: ($preflight[0].adopted_organization_oidc_templates // {}),
                 adopted_outside_collaborator_grants: ($preflight[0].adopted_outside_collaborator_grants // {}),
+                adopted_repository_actions_access_levels: ($preflight[0].adopted_repository_actions_access_levels // {}),
                 adopted_repository_custom_properties: ($preflight[0].adopted_repository_custom_properties // {}),
                 adopted_repository_names: ($preflight[0].adopted_repository_names // {}),
                 adopted_repository_oidc_templates: ($preflight[0].adopted_repository_oidc_templates // {}),
                 adopted_ruleset_ids: ($preflight[0].adopted_ruleset_ids // {}),
+                adopted_ruleset_enforcements: ($preflight[0].adopted_ruleset_enforcements // {}),
                 adopted_security_manager_assignments: ($preflight[0].adopted_security_manager_assignments // {}),
                 adopted_team_ids: ($preflight[0].adopted_team_ids // {}),
                 adopted_team_memberships: ($preflight[0].adopted_team_memberships // {}),
@@ -646,6 +919,23 @@ jobs:
             exit 1
           fi
 
+          destructive_changes="$(jq '[.resource_changes[]? | select(.change.actions | index("delete") or index("forget"))] | length' "$RUNNER_TEMP/plan.json")"
+          destructive_args=()
+          if [[ "$destructive_changes" != "0" ]]; then
+            if [[ "$DESTRUCTIVE_CHANGE_ACKNOWLEDGED" != "true" || -z "$DEPENDENCY_ANALYSIS_JSON" ]]; then
+              echo "Every removal requires acknowledgement and exact-plan-bound dependency analysis." >&2
+              exit 1
+            fi
+            printf '%s\n' "$DEPENDENCY_ANALYSIS_JSON" > "$RUNNER_TEMP/dependency-analysis.json"
+            destructive_args=(
+              --destructive-change-acknowledged=true
+              --dependency-analysis "$RUNNER_TEMP/dependency-analysis.json"
+            )
+          elif [[ "$DESTRUCTIVE_CHANGE_ACKNOWLEDGED" != "false" || -n "$DEPENDENCY_ANALYSIS_JSON" ]]; then
+            echo "Destructive-change review evidence was supplied for a plan without removals." >&2
+            exit 1
+          fi
+
           jq -S '{format_version,terraform_version,resource_changes,output_changes}' \
             "$RUNNER_TEMP/plan.json" | sha256sum | cut -d' ' -f1 \
             > "$RUNNER_TEMP/plan.digest"
@@ -658,8 +948,12 @@ jobs:
               --observed "$RUNNER_TEMP/observed.json" \
               --plan "$RUNNER_TEMP/plan.json" --plan-file "$RUNNER_TEMP/governance.tfplan" \
               --phase "$ROLLOUT_PHASE" --risk-acknowledged="$RISK_ACKNOWLEDGED" \
+              "${destructive_args[@]}" \
               --organization mindclade --change-reference "$CHANGE_REFERENCE" \
-              --workflow-ref "$GITHUB_WORKFLOW_REF" --source-sha "$GITHUB_SHA" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --oidc-issuer https://token.actions.githubusercontent.com \
+              --review-context-digest "$REVIEW_CONTEXT_DIGEST" \
+              --source-sha "$GITHUB_SHA" \
               --workflow-sha "$GITHUB_WORKFLOW_SHA" \
               --actor-id "$GITHUB_ACTOR_ID" --plan-app-id "$PLAN_APP_ID" \
               --apply-app-id "$APPLY_APP_ID" \
@@ -675,6 +969,48 @@ jobs:
           )
           jq -e '.decision.eligible_for_protected_apply == true' \
             "$RUNNER_TEMP/plan-evidence.json" > /dev/null
+          if [[ ! "$PLAN_EVIDENCE_KMS_KEY_VERSION" =~ ^projects/([^/]+)/locations/([^/]+)/keyRings/([^/]+)/cryptoKeys/([^/]+)/cryptoKeyVersions/([^/]+)$ ]]; then
+            echo "The qualified evidence key version is malformed." >&2
+            exit 1
+          fi
+          kms_project="${BASH_REMATCH[1]}"
+          kms_location="${BASH_REMATCH[2]}"
+          kms_keyring="${BASH_REMATCH[3]}"
+          kms_key="${BASH_REMATCH[4]}"
+          kms_version="${BASH_REMATCH[5]}"
+          test "$PLAN_EVIDENCE_KMS_ALGORITHM" = "EC_SIGN_P256_SHA256"
+          gcloud kms asymmetric-sign \
+            --project "$kms_project" \
+            --location "$kms_location" \
+            --keyring "$kms_keyring" \
+            --key "$kms_key" \
+            --version "$kms_version" \
+            --digest-algorithm sha256 \
+            --input-file "$RUNNER_TEMP/plan-evidence.json" \
+            --signature-file "$RUNNER_TEMP/plan-evidence.sig"
+          printf '%s' "$PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64" \
+            | base64 --decode > "$RUNNER_TEMP/plan-evidence-public-key.pem"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/plan-evidence-public-key.pem" | cut -d' ' -f1)" \
+            = "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST"
+          current_epoch="$(date -u +%s)"
+          (
+            cd "$GITHUB_WORKSPACE"
+            bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+              verify-evidence --root "$GITHUB_WORKSPACE" \
+              --input "$RUNNER_TEMP/plan-evidence.json" \
+              --signature "$RUNNER_TEMP/plan-evidence.sig" \
+              --public-key "$RUNNER_TEMP/plan-evidence-public-key.pem" \
+              --public-key-digest "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST" \
+              --kms-key-version "$PLAN_EVIDENCE_KMS_KEY_VERSION" \
+              --signature-algorithm "$PLAN_EVIDENCE_KMS_ALGORITHM" \
+              --at-epoch "$current_epoch" --require-eligible \
+              --expected-change-reference "$CHANGE_REFERENCE" \
+              --expected-review-context-digest "$REVIEW_CONTEXT_DIGEST" \
+              --expected-source-sha "$GITHUB_SHA" \
+              --expected-workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --expected-workflow-sha "$GITHUB_WORKFLOW_SHA" \
+              > "$RUNNER_TEMP/plan-evidence-authentication.json"
+          )
           rm -f "$RUNNER_TEMP/governance.tfplan" "$RUNNER_TEMP/plan.json"
           rm -f "$RUNNER_TEMP/adoption-discovery.tfplan" "$RUNNER_TEMP/adoption-discovery.json"
 
@@ -685,6 +1021,9 @@ jobs:
           path: |-
             ${{ runner.temp }}/plan.digest
             ${{ runner.temp }}/plan-evidence.json
+            ${{ runner.temp }}/plan-evidence.sig
+            ${{ runner.temp }}/plan-evidence-authentication.json
+            ${{ runner.temp }}/dependency-analysis.json
           if-no-files-found: error
           retention-days: 1
 
@@ -800,6 +1139,42 @@ jobs:
         with:
           bazelisk-cache: true
           repository-cache: true
+
+      - name: Authenticate reviewed evidence before apply identity exchange
+        env:
+          CHANGE_REFERENCE: ${{ inputs.change_reference }}
+          PLAN_EVIDENCE_KMS_ALGORITHM: ${{ needs.source-gate.outputs.plan_evidence_kms_algorithm }}
+          PLAN_EVIDENCE_KMS_KEY_VERSION: ${{ needs.source-gate.outputs.plan_evidence_kms_key_version }}
+          PLAN_EVIDENCE_PUBLIC_KEY_DIGEST: ${{ needs.source-gate.outputs.plan_evidence_public_key_digest }}
+          PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64: ${{ vars.GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64 }}
+          REVIEW_CONTEXT_DIGEST: ${{ needs.source-gate.outputs.review_context_digest }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          test -f "$RUNNER_TEMP/reviewed/plan-evidence.json"
+          test -f "$RUNNER_TEMP/reviewed/plan-evidence.sig"
+          printf '%s' "$PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64" \
+            | base64 --decode > "$RUNNER_TEMP/plan-evidence-public-key.pem"
+          test "$(base64 -w0 "$RUNNER_TEMP/plan-evidence-public-key.pem")" \
+            = "$PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64"
+          test "sha256:$(sha256sum "$RUNNER_TEMP/plan-evidence-public-key.pem" | cut -d' ' -f1)" \
+            = "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST"
+          current_epoch="$(date -u +%s)"
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            verify-evidence --root "$GITHUB_WORKSPACE" \
+            --input "$RUNNER_TEMP/reviewed/plan-evidence.json" \
+            --signature "$RUNNER_TEMP/reviewed/plan-evidence.sig" \
+            --public-key "$RUNNER_TEMP/plan-evidence-public-key.pem" \
+            --public-key-digest "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST" \
+            --kms-key-version "$PLAN_EVIDENCE_KMS_KEY_VERSION" \
+            --signature-algorithm "$PLAN_EVIDENCE_KMS_ALGORITHM" \
+            --at-epoch "$current_epoch" --require-eligible \
+            --expected-change-reference "$CHANGE_REFERENCE" \
+            --expected-review-context-digest "$REVIEW_CONTEXT_DIGEST" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --expected-workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --expected-workflow-sha "$GITHUB_WORKFLOW_SHA" > /dev/null
 
       - name: Configure OpenTofu
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
@@ -1002,15 +1377,86 @@ jobs:
             echo "WIF_QUALIFICATION_EVIDENCE_DIGEST=$WIF_QUALIFICATION_EVIDENCE_DIGEST"
           } >> "$GITHUB_ENV"
 
+      - name: Fetch and validate exact canonical workflow authorities
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+          authority_root="$RUNNER_TEMP/canonical-workflow-authorities"
+          test ! -e "$authority_root"
+          install -d -m 0700 "$authority_root"
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            compile --root "$GITHUB_WORKSPACE" \
+            --output "$RUNNER_TEMP/authority-catalog.json"
+          while IFS=$'\t' read -r repository revision implementation_revision state; do
+            if [[ "$state" != "reviewed" ]]; then
+              continue
+            fi
+            [[ "$repository" =~ ^(\.github|bootstrap|infrastructure-live|gitops|mindclade)$ ]]
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+            if [[ "$repository" == ".github" ]]; then
+              [[ "$implementation_revision" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$implementation_revision" != "$revision" ]]
+            else
+              [[ "$implementation_revision" == "-" ]]
+            fi
+            destination="$authority_root/$repository"
+            gh repo clone "mindclade/$repository" "$destination" -- \
+              --filter=blob:none --no-checkout
+            git -C "$destination" fetch --no-tags origin \
+              "+refs/heads/main:refs/remotes/origin/main"
+            git -C "$destination" fetch --no-tags origin "$revision"
+            git -C "$destination" merge-base --is-ancestor \
+              "$revision" refs/remotes/origin/main
+            if [[ "$implementation_revision" != "-" ]]; then
+              git -C "$destination" fetch --no-tags origin "$implementation_revision"
+              git -C "$destination" merge-base --is-ancestor \
+                "$implementation_revision" "$revision"
+              implementation_destination="$authority_root/.github-implementation"
+              test ! -e "$implementation_destination"
+              gh repo clone "mindclade/$repository" "$implementation_destination" -- \
+                --filter=blob:none --no-checkout
+              git -C "$implementation_destination" fetch --no-tags origin \
+                "+refs/heads/main:refs/remotes/origin/main"
+              git -C "$implementation_destination" fetch --no-tags origin \
+                "$implementation_revision"
+              git -C "$implementation_destination" merge-base --is-ancestor \
+                "$implementation_revision" refs/remotes/origin/main
+              git -C "$implementation_destination" checkout --detach "$implementation_revision"
+              test "$(git -C "$implementation_destination" rev-parse HEAD)" = "$implementation_revision"
+            fi
+            git -C "$destination" checkout --detach "$revision"
+            test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
+          done < <(
+            jq -r '.actions_policy.authority_inventories[]
+              | [.repository, .revision, (.implementation_revision // "-"), .activation.state] | @tsv' \
+              "$RUNNER_TEMP/authority-catalog.json"
+          )
+          export MINDCLADE_AUTHORITY_ROOT="$authority_root"
+          export MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES=1
+          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            validate --root "$GITHUB_WORKSPACE" > /dev/null
+          {
+            echo "MINDCLADE_AUTHORITY_ROOT=$authority_root"
+            echo "MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES=1"
+          } >> "$GITHUB_ENV"
+
       - name: Recompute, verify, and apply
         id: apply-attempt
         env:
           APPLY_APP_ID: ${{ vars.GHCFG_APPLY_APP_ID }}
           CHANGE_REFERENCE: ${{ inputs.change_reference }}
+          DESTRUCTIVE_CHANGE_ACKNOWLEDGED: ${{ inputs.acknowledge_destructive_changes }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           PLAN_APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          PLAN_EVIDENCE_KMS_ALGORITHM: ${{ needs.source-gate.outputs.plan_evidence_kms_algorithm }}
+          PLAN_EVIDENCE_KMS_KEY_VERSION: ${{ needs.source-gate.outputs.plan_evidence_kms_key_version }}
+          PLAN_EVIDENCE_PUBLIC_KEY_DIGEST: ${{ needs.source-gate.outputs.plan_evidence_public_key_digest }}
+          REVIEW_CONTEXT_DIGEST: ${{ needs.source-gate.outputs.review_context_digest }}
           RISK_ACKNOWLEDGED: ${{ inputs.acknowledge_privilege_expansion }}
           ROLLOUT_PHASE: ${{ inputs.phase }}
           TF_STATE_BUCKET: ${{ vars.GHCFG_STATE_BUCKET }}
@@ -1019,10 +1465,21 @@ jobs:
           set -euo pipefail
           umask 077
           printf '%s\n' "reviewed-evidence-verification" > "$RUNNER_TEMP/apply-attempt.stage"
+          current_epoch="$(date -u +%s)"
           bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
             verify-evidence --root "$GITHUB_WORKSPACE" \
-            --input "$RUNNER_TEMP/reviewed/plan-evidence.json" > /dev/null
-          current_epoch="$(date -u +%s)"
+            --input "$RUNNER_TEMP/reviewed/plan-evidence.json" \
+            --signature "$RUNNER_TEMP/reviewed/plan-evidence.sig" \
+            --public-key "$RUNNER_TEMP/plan-evidence-public-key.pem" \
+            --public-key-digest "$PLAN_EVIDENCE_PUBLIC_KEY_DIGEST" \
+            --kms-key-version "$PLAN_EVIDENCE_KMS_KEY_VERSION" \
+            --signature-algorithm "$PLAN_EVIDENCE_KMS_ALGORITHM" \
+            --at-epoch "$current_epoch" --require-eligible \
+            --expected-change-reference "$CHANGE_REFERENCE" \
+            --expected-review-context-digest "$REVIEW_CONTEXT_DIGEST" \
+            --expected-source-sha "$GITHUB_SHA" \
+            --expected-workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --expected-workflow-sha "$GITHUB_WORKFLOW_SHA" > /dev/null
           jq -e --arg change_reference "$CHANGE_REFERENCE" \
             --arg phase "$ROLLOUT_PHASE" \
             --arg run_attempt "$GITHUB_RUN_ATTEMPT" \
@@ -1036,6 +1493,7 @@ jobs:
             --arg wif_qualification_evidence_digest "$WIF_QUALIFICATION_EVIDENCE_DIGEST" \
             --arg state_backend_digest "$STATE_BACKEND_DIGEST" \
             --arg executor_contract_digest "$EXECUTOR_CONTRACT_DIGEST" \
+            --arg review_context_digest "$REVIEW_CONTEXT_DIGEST" \
             --argjson current_epoch "$current_epoch" '
               .api_version == "github.mindclade.io/v1"
               and .kind == "PlanEvidence"
@@ -1055,6 +1513,8 @@ jobs:
               and .bindings.wif_qualification_evidence_digest == $wif_qualification_evidence_digest
               and .bindings.state_backend_digest == $state_backend_digest
               and .bindings.executor_contract_digest == $executor_contract_digest
+              and .bindings.oidc_issuer == "https://token.actions.githubusercontent.com"
+              and .bindings.review_context_digest == $review_context_digest
               and .bindings.run_id == ($run_id | tonumber)
               and .bindings.run_attempt == ($run_attempt | tonumber)
               and .bindings.plan_json == .digests.plan_json
@@ -1066,6 +1526,20 @@ jobs:
             ' "$RUNNER_TEMP/reviewed/plan-evidence.json" > /dev/null
           reviewed_created_epoch="$(jq -r '.bindings.created_epoch' "$RUNNER_TEMP/reviewed/plan-evidence.json")"
           reviewed_expires_epoch="$(jq -r '.bindings.expires_epoch' "$RUNNER_TEMP/reviewed/plan-evidence.json")"
+          destructive_args=()
+          if [[ "$(jq -r '.decision.requires_destructive_change_acknowledgement' "$RUNNER_TEMP/reviewed/plan-evidence.json")" == "true" ]]; then
+            if [[ "$DESTRUCTIVE_CHANGE_ACKNOWLEDGED" != "true" || ! -f "$RUNNER_TEMP/reviewed/dependency-analysis.json" ]]; then
+              echo "Reviewed destructive plan is missing its acknowledged dependency analysis." >&2
+              exit 1
+            fi
+            destructive_args=(
+              --destructive-change-acknowledged=true
+              --dependency-analysis "$RUNNER_TEMP/reviewed/dependency-analysis.json"
+            )
+          elif [[ "$DESTRUCTIVE_CHANGE_ACKNOWLEDGED" != "false" || -f "$RUNNER_TEMP/reviewed/dependency-analysis.json" ]]; then
+            echo "Unexpected destructive-change review evidence was supplied." >&2
+            exit 1
+          fi
           printf '%s\n' "source-and-state-recomputation" > "$RUNNER_TEMP/apply-attempt.stage"
           bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
             compile --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/catalog.json"
@@ -1089,10 +1563,12 @@ jobs:
                 adopted_organization_custom_properties: ($preflight[0].adopted_organization_custom_properties // {}),
                 adopted_organization_oidc_templates: ($preflight[0].adopted_organization_oidc_templates // {}),
                 adopted_outside_collaborator_grants: ($preflight[0].adopted_outside_collaborator_grants // {}),
+                adopted_repository_actions_access_levels: ($preflight[0].adopted_repository_actions_access_levels // {}),
                 adopted_repository_custom_properties: ($preflight[0].adopted_repository_custom_properties // {}),
                 adopted_repository_names: ($preflight[0].adopted_repository_names // {}),
                 adopted_repository_oidc_templates: ($preflight[0].adopted_repository_oidc_templates // {}),
                 adopted_ruleset_ids: ($preflight[0].adopted_ruleset_ids // {}),
+                adopted_ruleset_enforcements: ($preflight[0].adopted_ruleset_enforcements // {}),
                 adopted_security_manager_assignments: ($preflight[0].adopted_security_manager_assignments // {}),
                 adopted_team_ids: ($preflight[0].adopted_team_ids // {}),
                 adopted_team_memberships: ($preflight[0].adopted_team_memberships // {}),
@@ -1151,8 +1627,12 @@ jobs:
               --observed "$RUNNER_TEMP/observed.json" \
               --plan "$RUNNER_TEMP/plan.json" --plan-file "$RUNNER_TEMP/governance.tfplan" \
               --phase "$ROLLOUT_PHASE" --risk-acknowledged="$RISK_ACKNOWLEDGED" \
+              "${destructive_args[@]}" \
               --organization mindclade --change-reference "$CHANGE_REFERENCE" \
-              --workflow-ref "$GITHUB_WORKFLOW_REF" --source-sha "$GITHUB_SHA" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --oidc-issuer https://token.actions.githubusercontent.com \
+              --review-context-digest "$REVIEW_CONTEXT_DIGEST" \
+              --source-sha "$GITHUB_SHA" \
               --workflow-sha "$GITHUB_WORKFLOW_SHA" \
               --actor-id "$GITHUB_ACTOR_ID" --plan-app-id "$PLAN_APP_ID" \
               --apply-app-id "$APPLY_APP_ID" \
@@ -1193,8 +1673,12 @@ jobs:
               --observed "$RUNNER_TEMP/observed.json" \
               --plan "$RUNNER_TEMP/plan.json" --plan-file "$RUNNER_TEMP/governance.tfplan" \
               --phase "$ROLLOUT_PHASE" --risk-acknowledged="$RISK_ACKNOWLEDGED" \
+              "${destructive_args[@]}" \
               --organization mindclade --change-reference "$CHANGE_REFERENCE" \
-              --workflow-ref "$GITHUB_WORKFLOW_REF" --source-sha "$GITHUB_SHA" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --oidc-issuer https://token.actions.githubusercontent.com \
+              --review-context-digest "$REVIEW_CONTEXT_DIGEST" \
+              --source-sha "$GITHUB_SHA" \
               --workflow-sha "$GITHUB_WORKFLOW_SHA" \
               --actor-id "$GITHUB_ACTOR_ID" --plan-app-id "$PLAN_APP_ID" \
               --apply-app-id "$APPLY_APP_ID" \
@@ -1278,7 +1762,10 @@ jobs:
               --plan-file "$RUNNER_TEMP/verification.tfplan" \
               --phase "$ROLLOUT_PHASE" --risk-acknowledged="$RISK_ACKNOWLEDGED" \
               --organization mindclade --change-reference "$CHANGE_REFERENCE" \
-              --workflow-ref "$GITHUB_WORKFLOW_REF" --source-sha "$GITHUB_SHA" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --oidc-issuer https://token.actions.githubusercontent.com \
+              --review-context-digest "$REVIEW_CONTEXT_DIGEST" \
+              --source-sha "$GITHUB_SHA" \
               --workflow-sha "$GITHUB_WORKFLOW_SHA" \
               --actor-id "$GITHUB_ACTOR_ID" --plan-app-id "$PLAN_APP_ID" \
               --apply-app-id "$APPLY_APP_ID" \

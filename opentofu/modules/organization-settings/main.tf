@@ -11,7 +11,13 @@ locals {
 
   custom_properties = {
     for property in var.organization.custom_properties :
-    property.name => property
+    property.name => merge(property, {
+      allowed_values = sort(distinct(concat(
+        property.allowed_values,
+        var.organization.custom_property_migration.phase == "preserve" ?
+        lookup(var.organization.custom_property_migration.legacy_allowed_values, property.name, []) : [],
+      )))
+    })
   }
 
   allowed_action_patterns = [

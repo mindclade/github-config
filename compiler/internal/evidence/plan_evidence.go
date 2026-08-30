@@ -2,8 +2,13 @@
 package evidence
 
 import (
+	"crypto/ecdsa"
+	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -38,14 +43,17 @@ var permissionReductionDeleteTypes = map[string]struct{}{
 }
 
 var managedWriteTypes = map[string]struct{}{
+	"github_actions_environment_variable":                                   {},
 	"github_actions_organization_permissions":                               {},
 	"github_actions_organization_workflow_permissions":                      {},
 	"github_actions_organization_oidc_subject_claim_customization_template": {},
+	"github_actions_repository_access_level":                                {},
 	"github_actions_repository_oidc_subject_claim_customization_template":   {},
 	"github_membership": {}, "github_organization_custom_properties": {},
 	"github_organization_role_team": {},
 	"github_organization_ruleset":   {}, "github_organization_settings": {},
-	"github_repository": {}, "github_repository_collaborator": {},
+	"github_repository_ruleset": {},
+	"github_repository":         {}, "github_repository_collaborator": {},
 	"github_repository_custom_property": {}, "github_repository_environment": {},
 	"github_repository_environment_deployment_policy": {}, "github_team": {},
 	"github_repository_dependabot_security_updates": {},
@@ -57,6 +65,7 @@ var managedWriteTypes = map[string]struct{}{
 // expand governance authority: a known change outside this tree is denied.
 // Numeric Terraform collection indices are normalized to "*".
 var managedWritePaths = map[string][]string{
+	"github_actions_environment_variable": {"/repository", "/environment", "/variable_name", "/value"},
 	"github_actions_organization_permissions": {
 		"/allowed_actions", "/enabled_repositories", "/sha_pinning_required",
 		"/allowed_actions_config", "/allowed_actions_config/*/github_owned_allowed",
@@ -72,7 +81,8 @@ var managedWritePaths = map[string][]string{
 	"github_actions_repository_oidc_subject_claim_customization_template": {
 		"/repository", "/use_default", "/include_claim_keys", "/include_claim_keys/*",
 	},
-	"github_membership": {"/username", "/role"},
+	"github_actions_repository_access_level": {"/repository", "/access_level"},
+	"github_membership":                      {"/username", "/role"},
 	"github_organization_custom_properties": {
 		"/property_name", "/value_type", "/required", "/allowed_values", "/allowed_values/*", "/values_editable_by",
 	},
@@ -114,9 +124,10 @@ var managedWritePaths = map[string][]string{
 		"/reviewers", "/reviewers/*/teams", "/reviewers/*/teams/*", "/reviewers/*/users", "/reviewers/*/users/*",
 		"/deployment_branch_policy", "/deployment_branch_policy/*/protected_branches", "/deployment_branch_policy/*/custom_branch_policies",
 	},
-	// Custom deployment-branch policy resources are not emitted by catalog v1.
-	"github_repository_environment_deployment_policy": {},
-	"github_repository_dependabot_security_updates":   {"/repository", "/enabled"},
+	"github_repository_environment_deployment_policy": {
+		"/repository", "/environment", "/branch_pattern", "/tag_pattern",
+	},
+	"github_repository_dependabot_security_updates": {"/repository", "/enabled"},
 	"github_team":            {"/name", "/description", "/privacy"},
 	"github_team_membership": {"/team_id", "/username", "/role"},
 	"github_team_repository": {"/team_id", "/repository", "/permission"},
@@ -126,22 +137,26 @@ var managedWritePaths = map[string][]string{
 // parallel after_unknown tree marks that exact path unknown. They are never
 // accepted as caller-known mutations.
 var knownComputedWritePaths = map[string][]string{
+	"github_actions_environment_variable":                                   {"/id", "/created_at", "/updated_at"},
 	"github_actions_organization_permissions":                               {"/id"},
 	"github_actions_organization_workflow_permissions":                      {"/id"},
 	"github_actions_organization_oidc_subject_claim_customization_template": {"/id"},
 	"github_actions_repository_oidc_subject_claim_customization_template":   {"/id"},
-	"github_membership":                     {"/id", "/etag"},
-	"github_organization_custom_properties": {"/id"},
-	"github_organization_role_team":         {"/id"},
-	"github_organization_ruleset":           {"/id", "/etag", "/node_id", "/ruleset_id"},
+	"github_actions_repository_access_level":                                {"/id"},
+	"github_membership":                                                     {"/id", "/etag"},
+	"github_organization_custom_properties":                                 {"/id"},
+	"github_organization_role_team":                                         {"/id"},
+	"github_organization_ruleset":                                           {"/id", "/etag", "/node_id", "/ruleset_id"},
+	"github_repository_ruleset":                                             {"/id", "/etag", "/node_id", "/ruleset_id"},
 	"github_repository": {
 		"/id", "/etag", "/full_name", "/git_clone_url", "/html_url", "/http_clone_url", "/node_id",
 		"/primary_language", "/repo_id", "/ssh_clone_url", "/svn_url",
 	},
-	"github_repository_collaborator":                {"/id", "/invitation_id"},
-	"github_repository_custom_property":             {"/id", "/repository_id"},
-	"github_repository_environment":                 {"/id", "/repository_id"},
-	"github_repository_dependabot_security_updates": {"/id"},
+	"github_repository_collaborator":                  {"/id", "/invitation_id"},
+	"github_repository_custom_property":               {"/id", "/repository_id"},
+	"github_repository_environment":                   {"/id", "/repository_id"},
+	"github_repository_environment_deployment_policy": {"/id", "/repository_id", "/policy_id"},
+	"github_repository_dependabot_security_updates":   {"/id"},
 	"github_team":            {"/id", "/etag", "/members_count", "/node_id", "/slug", "/parent_team_read_id", "/parent_team_read_slug"},
 	"github_team_membership": {"/id", "/etag"},
 	"github_team_repository": {"/id", "/etag"},
@@ -150,12 +165,22 @@ var knownComputedWritePaths = map[string][]string{
 var organizationLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 var lowercaseHexDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var gitSHA40Pattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var changeIDPattern = regexp.MustCompile(`^change-[0-9]{6}$`)
+var changeReferencePattern = regexp.MustCompile(`^https://github\.com/mindclade/github-config/pull/[1-9][0-9]*$`)
+var kmsKeyVersionPattern = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/github-config-plan-evidence/cryptoKeyVersions/[1-9][0-9]*$`)
 var sensitiveFieldPattern = regexp.MustCompile(`(?i)(^|_)(access[_-]?token|authorization|client[_-]?secret|credential|password|private[_-]?key|secret|token)($|_)`)
 var terraformStringInstanceKeyPattern = regexp.MustCompile(`\["((?:[^"\\]|\\.)*)"\]$`)
 
 // Build emits a value-free receipt bound to the exact plan, catalog, rollout
 // phase, and caller-provided workflow identity fields.
-func Build(planJSONPath, planFilePath, catalogPath, observedPath, phase string, riskAcknowledged bool, policyInput map[string]any, expectedCatalogDigest string, identity map[string]string) (map[string]any, error) {
+func Build(
+	planJSONPath, planFilePath, catalogPath, observedPath, phase string,
+	riskAcknowledged, destructiveAcknowledged bool,
+	dependencyAnalysisPath string,
+	policyInput map[string]any,
+	expectedCatalogDigest string,
+	identity map[string]string,
+) (map[string]any, error) {
 	if phase != "adopt" && phase != "foundation" && phase != "enforce" {
 		return nil, errors.New("evidence phase must be adopt, foundation, or enforce")
 	}
@@ -293,6 +318,19 @@ func Build(planJSONPath, planFilePath, catalogPath, observedPath, phase string, 
 		}
 	}
 	summary, writes, highRisk, destructive, replacements, sensitive := summarizePlan(plan, catalogForClassification, observedForClassification, policyInput, phase)
+	destructiveIDs := stringSlice(destructive)
+	dependencyAnalysisVerified := false
+	if dependencyAnalysisPath != "" {
+		analysisDigest, analysisErr := validateDependencyAnalysis(
+			dependencyAnalysisPath, fmt.Sprint(digests["plan_json"]),
+			identity["change_reference"], destructiveIDs,
+		)
+		if analysisErr != nil {
+			return nil, analysisErr
+		}
+		digests["dependency_analysis"] = analysisDigest
+		dependencyAnalysisVerified = true
+	}
 	fundamental := false
 	privilegeExpansion := false
 	for _, rawChange := range highRisk {
@@ -316,8 +354,18 @@ func Build(planJSONPath, planFilePath, catalogPath, observedPath, phase string, 
 	if privilegeExpansion && !riskAcknowledged {
 		blockers = append(blockers, "privilege expansion requires explicit protected-workflow risk acknowledgement")
 	}
+	requiresDestructiveReview := len(destructiveIDs) > 0
+	if requiresDestructiveReview && !destructiveAcknowledged {
+		blockers = append(blockers, "removals require explicit protected-workflow destructive-change acknowledgement")
+	}
+	if requiresDestructiveReview && !dependencyAnalysisVerified {
+		blockers = append(blockers, "removals require exact-plan-bound dependency-analysis evidence")
+	}
+	if !requiresDestructiveReview && (destructiveAcknowledged || dependencyAnalysisVerified) {
+		blockers = append(blockers, "destructive-change acknowledgement and dependency analysis are valid only for a plan containing removals")
+	}
 	bindings := map[string]any{"organization": organization, "phase": phase, "plan_json": digests["plan_json"]}
-	for _, key := range []string{"plan_file", "catalog", "observed_state", "workflow_sources"} {
+	for _, key := range []string{"plan_file", "catalog", "observed_state", "workflow_sources", "dependency_analysis"} {
 		if digest, exists := digests[key]; exists {
 			bindings[key] = digest
 		}
@@ -343,6 +391,9 @@ func Build(planJSONPath, planFilePath, catalogPath, observedPath, phase string, 
 		"decision": map[string]any{
 			"eligible_for_protected_apply": len(blockers) == 0, "risk_acknowledged": riskAcknowledged,
 			"requires_risk_acknowledgement": privilegeExpansion, "blockers": blockers,
+			"destructive_change_acknowledged":             destructiveAcknowledged,
+			"requires_destructive_change_acknowledgement": requiresDestructiveReview,
+			"dependency_analysis_verified":                dependencyAnalysisVerified,
 		},
 	}
 	if catalogSourceDigest != "" {
@@ -373,6 +424,14 @@ func Verify(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read evidence: %w", err)
 	}
+	return verifyEvidenceBytes(data)
+}
+
+// verifyEvidenceBytes performs structural and self-digest verification over
+// one immutable byte slice. Authenticated verification deliberately shares
+// this helper so a pathname cannot be swapped between digest and signature
+// verification.
+func verifyEvidenceBytes(data []byte) (map[string]any, error) {
 	var document map[string]any
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.UseNumber()
@@ -410,7 +469,111 @@ func Verify(path string) (map[string]any, error) {
 	}, nil
 }
 
+// AuthenticationOptions binds protected evidence to one bootstrap-owned GCP
+// KMS asymmetric key version and the exact reviewed workflow context. The
+// public key is verified offline; no mutable network response participates in
+// the apply decision.
+type AuthenticationOptions struct {
+	SignaturePath, PublicKeyPath, PublicKeyDigest string
+	KMSKeyVersion, SignatureAlgorithm             string
+	ExpectedBindings                              map[string]string
+	AtEpoch                                       int64
+	RequireEligible                               bool
+}
+
+// VerifyAuthenticated first verifies the evidence's canonical self-digest,
+// then verifies a detached KMS signature over the exact on-disk bytes and all
+// caller-required issuer/revision/review/freshness bindings.
+func VerifyAuthenticated(path string, options AuthenticationOptions) (map[string]any, error) {
+	if options.SignatureAlgorithm != "EC_SIGN_P256_SHA256" {
+		return nil, errors.New("authenticated evidence requires EC_SIGN_P256_SHA256")
+	}
+	if !kmsKeyVersionPattern.MatchString(options.KMSKeyVersion) {
+		return nil, errors.New("authenticated evidence requires the exact bootstrap-signing/github-config-plan-evidence GCP KMS cryptoKeyVersion resource")
+	}
+	if !validSHA256Digest(options.PublicKeyDigest) {
+		return nil, errors.New("authenticated evidence requires a valid public-key digest")
+	}
+	evidenceBytes, err := readRegularFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read authenticated evidence: %w", err)
+	}
+	verification, err := verifyEvidenceBytes(evidenceBytes)
+	if err != nil {
+		return nil, err
+	}
+	signature, err := readRegularFile(options.SignaturePath)
+	if err != nil {
+		return nil, fmt.Errorf("read evidence signature: %w", err)
+	}
+	if len(signature) < 8 || len(signature) > 256 {
+		return nil, errors.New("evidence signature has an invalid length")
+	}
+	publicPEM, err := readRegularFile(options.PublicKeyPath)
+	if err != nil {
+		return nil, fmt.Errorf("read evidence public key: %w", err)
+	}
+	if len(publicPEM) > 16*1024 {
+		return nil, errors.New("evidence public key exceeds 16 KiB")
+	}
+	publicDigest := sha256.Sum256(publicPEM)
+	actualPublicDigest := "sha256:" + hex.EncodeToString(publicDigest[:])
+	if subtle.ConstantTimeCompare([]byte(options.PublicKeyDigest), []byte(actualPublicDigest)) != 1 {
+		return nil, errors.New("evidence public-key digest verification failed")
+	}
+	block, trailing := pem.Decode(publicPEM)
+	if block == nil || block.Type != "PUBLIC KEY" || len(strings.TrimSpace(string(trailing))) != 0 {
+		return nil, errors.New("evidence public key must contain exactly one PKIX PUBLIC KEY PEM block")
+	}
+	parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse evidence public key: %w", err)
+	}
+	publicKey, ok := parsed.(*ecdsa.PublicKey)
+	if !ok || publicKey.Curve.Params().Name != "P-256" {
+		return nil, errors.New("evidence public key must be an ECDSA P-256 key")
+	}
+	digest := sha256.Sum256(evidenceBytes)
+	if !ecdsa.VerifyASN1(publicKey, digest[:], signature) {
+		return nil, errors.New("evidence KMS signature verification failed")
+	}
+
+	var document map[string]any
+	decoder := json.NewDecoder(strings.NewReader(string(evidenceBytes)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&document); err != nil {
+		return nil, fmt.Errorf("decode authenticated evidence: %w", err)
+	}
+	bindings, _ := document["bindings"].(map[string]any)
+	for key, expected := range options.ExpectedBindings {
+		if expected == "" || fmt.Sprint(bindings[key]) != expected {
+			return nil, fmt.Errorf("authenticated evidence %s binding does not match the required value", key)
+		}
+	}
+	if bindings["oidc_issuer"] != "https://token.actions.githubusercontent.com" {
+		return nil, errors.New("authenticated evidence has an invalid OIDC issuer binding")
+	}
+	created, createdKnown := positiveJSONInteger(bindings["created_epoch"])
+	expires, expiresKnown := positiveJSONInteger(bindings["expires_epoch"])
+	if options.AtEpoch <= 0 || !createdKnown || !expiresKnown || created > options.AtEpoch || options.AtEpoch >= expires {
+		return nil, errors.New("authenticated evidence is outside its bound execution window")
+	}
+	decision, _ := document["decision"].(map[string]any)
+	eligible, _ := decision["eligible_for_protected_apply"].(bool)
+	if options.RequireEligible && !eligible {
+		return nil, errors.New("authenticated evidence is not eligible for protected apply")
+	}
+	verification["authentication"] = map[string]any{
+		"type": "gcp-kms-asymmetric-signature", "kms_key_version": options.KMSKeyVersion,
+		"algorithm": options.SignatureAlgorithm, "public_key_digest": actualPublicDigest,
+	}
+	return verification, nil
+}
+
 func validateProtectedEvidenceDocument(document map[string]any) error {
+	if err := validateDestructiveReviewEvidence(document); err != nil {
+		return err
+	}
 	bindings, _ := document["bindings"].(map[string]any)
 	planAppID, hasPlanApp := positiveJSONInteger(bindings["plan_app_id"])
 	applyAppID, hasApplyApp := positiveJSONInteger(bindings["apply_app_id"])
@@ -466,13 +629,19 @@ func validateProtectedEvidenceDocument(document map[string]any) error {
 			return fmt.Errorf("protected evidence has an invalid %s binding", key)
 		}
 	}
-	for _, key := range []string{"change_reference", "workflow_ref"} {
+	for _, key := range []string{"change_reference", "workflow_ref", "oidc_issuer"} {
 		value, ok := bindings[key].(string)
 		if !ok || strings.TrimSpace(value) == "" || len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
 			return fmt.Errorf("protected evidence has an invalid %s binding", key)
 		}
 	}
-	for _, key := range []string{"wif_qualification_evidence_digest", "state_backend_digest", "executor_contract_digest"} {
+	if bindings["oidc_issuer"] != "https://token.actions.githubusercontent.com" {
+		return errors.New("protected evidence has an invalid oidc_issuer binding")
+	}
+	if changeReference, _ := bindings["change_reference"].(string); !changeReferencePattern.MatchString(changeReference) {
+		return errors.New("protected evidence change_reference must be a canonical github-config pull request URL")
+	}
+	for _, key := range []string{"wif_qualification_evidence_digest", "state_backend_digest", "executor_contract_digest", "review_context_digest"} {
 		value, ok := bindings[key].(string)
 		if !ok || !validSHA256Digest(value) {
 			return fmt.Errorf("protected evidence has an invalid %s binding", key)
@@ -488,8 +657,133 @@ func validateProtectedEvidenceDocument(document map[string]any) error {
 	return nil
 }
 
+func validateDestructiveReviewEvidence(document map[string]any) error {
+	plan, planKnown := document["plan"].(map[string]any)
+	decision, decisionKnown := document["decision"].(map[string]any)
+	digests, digestsKnown := document["digests"].(map[string]any)
+	bindings, bindingsKnown := document["bindings"].(map[string]any)
+	if !planKnown || !decisionKnown || !digestsKnown || !bindingsKnown {
+		return errors.New("evidence omits destructive-review structure")
+	}
+	rawIDs, idsKnown := plan["destructive_change_ids"].([]any)
+	if !idsKnown {
+		return errors.New("evidence has malformed destructive-change IDs")
+	}
+	for _, rawID := range rawIDs {
+		id, ok := rawID.(string)
+		if !ok || !changeIDPattern.MatchString(id) {
+			return errors.New("evidence has malformed destructive-change IDs")
+		}
+	}
+	requires, requiresKnown := decision["requires_destructive_change_acknowledgement"].(bool)
+	acknowledged, acknowledgedKnown := decision["destructive_change_acknowledged"].(bool)
+	analysisVerified, analysisKnown := decision["dependency_analysis_verified"].(bool)
+	eligible, eligibleKnown := decision["eligible_for_protected_apply"].(bool)
+	if !requiresKnown || !acknowledgedKnown || !analysisKnown || !eligibleKnown || requires != (len(rawIDs) > 0) {
+		return errors.New("evidence has malformed destructive-review decision fields")
+	}
+	digest, hasDigest := digests["dependency_analysis"].(string)
+	boundDigest, hasBoundDigest := bindings["dependency_analysis"].(string)
+	digestBound := hasDigest && hasBoundDigest && validSHA256Digest(digest) && digest == boundDigest
+	if analysisVerified != digestBound {
+		return errors.New("evidence has an invalid dependency-analysis binding")
+	}
+	if eligible && requires && (!acknowledged || !analysisVerified) {
+		return errors.New("eligible destructive evidence omits acknowledgement or dependency analysis")
+	}
+	return nil
+}
+
 func validSHA256Digest(value string) bool {
 	return strings.HasPrefix(value, "sha256:") && lowercaseHexDigestPattern.MatchString(strings.TrimPrefix(value, "sha256:"))
+}
+
+func validateDependencyAnalysis(
+	path, planDigest, changeReference string, destructiveIDs []string,
+) (string, error) {
+	data, err := readRegularFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read dependency analysis: %w", err)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		return "", fmt.Errorf("decode dependency analysis: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return "", errors.New("dependency analysis must contain exactly one JSON object")
+	}
+	if !exactObjectKeys(document, []string{
+		"api_version", "kind", "plan_json_digest", "change_reference", "destructive_changes",
+	}) {
+		return "", errors.New("dependency analysis has an unsupported structure")
+	}
+	if document["api_version"] != validation.APIVersion || document["kind"] != "DependencyAnalysis" {
+		return "", errors.New("dependency analysis has an invalid document identity")
+	}
+	if !validSHA256Digest(planDigest) || document["plan_json_digest"] != planDigest {
+		return "", errors.New("dependency analysis is not bound to the exact plan JSON digest")
+	}
+	if strings.TrimSpace(changeReference) == "" || document["change_reference"] != changeReference {
+		return "", errors.New("dependency analysis is not bound to the reviewed change reference")
+	}
+	entries, ok := document["destructive_changes"].([]any)
+	if !ok || len(entries) != len(destructiveIDs) {
+		return "", errors.New("dependency analysis does not cover every destructive change")
+	}
+	for index, rawEntry := range entries {
+		entry, ok := rawEntry.(map[string]any)
+		if !ok || !exactObjectKeys(entry, []string{"change_id", "dependencies", "impact", "rollback"}) {
+			return "", errors.New("dependency analysis contains a malformed destructive-change entry")
+		}
+		if entry["change_id"] != destructiveIDs[index] {
+			return "", errors.New("dependency analysis destructive-change IDs must exactly match the sorted plan IDs")
+		}
+		dependencies, ok := entry["dependencies"].([]any)
+		if !ok || len(dependencies) > 100 {
+			return "", errors.New("dependency analysis contains an invalid dependency list")
+		}
+		seenDependencies := make(map[string]struct{}, len(dependencies))
+		for _, rawDependency := range dependencies {
+			dependency, ok := rawDependency.(string)
+			if !ok || !boundedEvidenceText(dependency, 512) {
+				return "", errors.New("dependency analysis contains an invalid dependency identifier")
+			}
+			if _, duplicate := seenDependencies[dependency]; duplicate {
+				return "", errors.New("dependency analysis contains a duplicate dependency identifier")
+			}
+			seenDependencies[dependency] = struct{}{}
+		}
+		for _, field := range []string{"impact", "rollback"} {
+			value, ok := entry[field].(string)
+			if !ok || !boundedEvidenceText(value, 2048) {
+				return "", fmt.Errorf("dependency analysis contains an invalid %s statement", field)
+			}
+		}
+	}
+	canonical, err := rendering.CanonicalJSON(document)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize dependency analysis: %w", err)
+	}
+	return rendering.Digest(canonical), nil
+}
+
+func exactObjectKeys(value map[string]any, expected []string) bool {
+	if len(value) != len(expected) {
+		return false
+	}
+	for _, key := range expected {
+		if _, exists := value[key]; !exists {
+			return false
+		}
+	}
+	return true
+}
+
+func boundedEvidenceText(value string, maximum int) bool {
+	return strings.TrimSpace(value) != "" && len(value) <= maximum && !strings.ContainsAny(value, "\x00\r\n")
 }
 
 func positiveJSONInteger(value any) (int64, bool) {
@@ -521,13 +815,19 @@ func validateIdentity(identity map[string]string) (map[string]any, error) {
 	if organization := identity["organization"]; organization != "" && !organizationLoginPattern.MatchString(organization) {
 		return nil, errors.New("evidence organization binding is not a valid GitHub organization login")
 	}
-	for _, key := range []string{"change_reference", "workflow_ref"} {
+	for _, key := range []string{"change_reference", "workflow_ref", "oidc_issuer"} {
 		if value := identity[key]; value != "" {
 			if strings.TrimSpace(value) == "" || len(value) > 512 || strings.ContainsAny(value, "\r\n\x00") {
 				return nil, fmt.Errorf("evidence %s binding is invalid", key)
 			}
 			result[key] = value
 		}
+	}
+	if issuer := identity["oidc_issuer"]; issuer != "" && issuer != "https://token.actions.githubusercontent.com" {
+		return nil, errors.New("evidence oidc_issuer must be the GitHub Actions token issuer")
+	}
+	if reference := identity["change_reference"]; reference != "" && identity["plan_app_id"] != "" && !changeReferencePattern.MatchString(reference) {
+		return nil, errors.New("protected evidence change_reference must be a canonical github-config pull request URL")
 	}
 	for _, key := range []string{"source_sha", "workflow_sha"} {
 		if value := identity[key]; value != "" {
@@ -551,9 +851,9 @@ func validateIdentity(identity map[string]string) (map[string]any, error) {
 	protected := identity["plan_app_id"] != "" || identity["apply_app_id"] != ""
 	if protected {
 		for _, key := range []string{
-			"change_reference", "workflow_ref", "source_sha", "workflow_sha", "actor_id",
+			"change_reference", "workflow_ref", "oidc_issuer", "source_sha", "workflow_sha", "actor_id",
 			"plan_app_id", "apply_app_id", "wif_qualification_evidence_digest",
-			"state_backend_digest", "executor_contract_digest",
+			"state_backend_digest", "executor_contract_digest", "review_context_digest",
 		} {
 			if identity[key] == "" {
 				return nil, fmt.Errorf("protected evidence requires %s", key)
@@ -573,7 +873,7 @@ func validateIdentity(identity map[string]string) (map[string]any, error) {
 	}
 	for _, key := range []string{
 		"reviewed_evidence_digest", "wif_qualification_evidence_digest",
-		"state_backend_digest", "executor_contract_digest",
+		"state_backend_digest", "executor_contract_digest", "review_context_digest",
 	} {
 		if value := identity[key]; value != "" {
 			if !validSHA256Digest(value) {
@@ -700,7 +1000,7 @@ func summarizePlan(plan, catalog, observed, policyInput map[string]any, phase st
 		if permissionReduction && actionClass == "delete" {
 			permissionReductionDeleteObserved = true
 		}
-		if (actionClass == "delete" && !permissionReduction) || actionClass == "replace" || actionClass == "forget" {
+		if actionClass == "delete" || actionClass == "replace" || actionClass == "forget" {
 			destructive = append(destructive, changeID)
 		}
 		if actionClass == "replace" {
@@ -1315,6 +1615,8 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 	case "delete":
 		if _, reduction := permissionReductionDeleteTypes[strings.ToLower(resourceType)]; reduction {
 			add("permission_reduction", "access authority is revoked")
+		} else if governedRetirementAddress(strings.ToLower(resourceType), address) {
+			add("governed_retirement", "catalog retirement requires exact-plan acknowledgement and complete dependency analysis")
 		} else {
 			add("destructive", "resource deletion is prohibited")
 		}
@@ -1329,6 +1631,16 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 		add("unknown_change", "one or more security- or authority-relevant post-change values are unknown")
 	}
 	resourceName := strings.ToLower(resourceType)
+	// Environment, deployment-policy, organization-ruleset, and team retirement
+	// are the only non-access deletions that the normal convergence path may
+	// govern. Build still requires explicit acknowledgement plus an exact-plan,
+	// complete DependencyAnalysis for every such deletion. Returning here keeps
+	// generic before-to-null field walkers from misclassifying the reviewed
+	// retirement itself as an unreviewable protection weakening. Repository
+	// deletion, replacement, state-forget, and unknown addresses remain denied.
+	if actionClass == "delete" && governedRetirementAddress(resourceName, address) {
+		return sortedKeys(classes), sortedKeys(reasons)
+	}
 	oidcCatalogAuthorized := false
 	if _, managed := managedWriteTypes[resourceName]; !managed {
 		add("unknown_change", "resource type is outside the reviewed governance write allowlist")
@@ -1350,16 +1662,28 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 				add("unknown_change", "repository custom-property after-state does not exactly match the compiled catalog")
 			}
 		case "github_organization_custom_properties":
-			if !catalogOrganizationPropertyAfterState(address, after, catalog) {
+			if !catalogOrganizationPropertyAfterState(address, after, catalog, observed) {
 				add("unknown_change", "organization custom-property after-state does not exactly match the compiled catalog")
 			}
 		case "github_repository_environment":
 			if !catalogEnvironmentAfterState(address, after, catalog, observed) {
 				add("unknown_change", "repository environment after-state does not exactly match a unique compiled-catalog assignment")
 			}
+		case "github_repository_environment_deployment_policy":
+			if !catalogEnvironmentDeploymentPolicyAfterState(address, after, catalog) {
+				add("unknown_change", "environment deployment-policy after-state does not exactly match a unique compiled-catalog branch or tag pattern")
+			}
+		case "github_actions_environment_variable":
+			if !catalogEnvironmentVariableAfterState(address, after, catalog) {
+				add("unknown_change", "environment variable after-state does not exactly match one source-qualified compiled-catalog handoff")
+			}
 		case "github_repository_dependabot_security_updates":
 			if !catalogDependabotAfterState(address, after, catalog) {
 				add("unknown_change", "Dependabot security-updates after-state does not exactly match the compiled catalog")
+			}
+		case "github_actions_repository_access_level":
+			if !catalogRepositoryActionsAccessAfterState(address, after, catalog) {
+				add("unknown_change", "repository Actions access after-state does not exactly match the compiled catalog")
 			}
 		case "github_actions_organization_permissions", "github_actions_organization_workflow_permissions":
 			if !catalogActionsAfterState(resourceName, address, after, catalog) {
@@ -1430,12 +1754,29 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 			add("security_weakening", "Dependabot security updates are disabled or unknown in the resource after-state")
 		}
 	}
+	if resourceName == "github_actions_repository_access_level" && actionClass == "update" && !equalPlanMaps(before, after) {
+		oldRank, oldKnown := repositoryActionsAccessRank(before["access_level"])
+		newRank, newKnown := repositoryActionsAccessRank(after["access_level"])
+		if !oldKnown || !newKnown {
+			add("unknown_change", "repository Actions access transition is missing or malformed")
+		} else if newRank > oldRank {
+			add("privilege_expansion", "catalog-authorized reusable workflow audience expands")
+		} else if newRank < oldRank {
+			add("permission_reduction", "reusable workflow sharing authority is narrowed")
+		}
+	}
 	if resourceName == "github_repository_custom_property" && actionClass == "update" && !equalPlanMaps(before, after) {
 		classifyRepositoryPropertySemantic(before, after, add)
 	}
 	if resourceName == "github_repository_environment" {
 		classifyEnvironmentReviewerChange(actionClass, before, after, add)
 		classifyEnvironmentBranchPolicyChange(actionClass, before, after, add)
+	}
+	if resourceName == "github_repository_environment_deployment_policy" && !equalPlanMaps(before, after) {
+		classifyEnvironmentDeploymentPolicyChange(actionClass, before, after, add)
+	}
+	if resourceName == "github_actions_environment_variable" && actionClass != "delete" && !equalPlanMaps(before, after) {
+		add("privilege_expansion", "connected workload-identity or archive handoff authority is established or changed")
 	}
 	visitFieldChanges(before, after, func(key string, oldValue, newValue any) {
 		lowerKey := strings.ToLower(key)
@@ -1586,6 +1927,27 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 	return sortedKeys(classes), sortedKeys(reasons)
 }
 
+func governedRetirementAddress(resourceType, address string) bool {
+	key, ok := terraformInstanceKey(address)
+	if !ok {
+		return false
+	}
+	base := ""
+	switch resourceType {
+	case "github_repository_environment":
+		base = "module.repository_environments.github_repository_environment.this"
+	case "github_repository_environment_deployment_policy":
+		base = "module.repository_environments.github_repository_environment_deployment_policy.this"
+	case "github_organization_ruleset":
+		base = "module.rulesets.github_organization_ruleset.this"
+	case "github_team":
+		base = "module.team_access.github_team.this"
+	default:
+		return false
+	}
+	return exactIndexedAddress(address, base, key)
+}
+
 // classifyEnvironmentReviewerChange models GitHub environment reviewers as
 // OR-authorities. Adding an authority to an established reviewer gate expands
 // who can approve, while removing only some authorities narrows access. The
@@ -1695,6 +2057,57 @@ func parseEnvironmentBranchPolicy(value any) (environmentBranchPolicy, bool) {
 		protectedBranches:    protectedBranches,
 		customBranchPolicies: customBranchPolicies,
 	}, true
+}
+
+func classifyEnvironmentDeploymentPolicyChange(
+	actionClass string, before, after map[string]any, add func(string, string),
+) {
+	if actionClass != "create" && actionClass != "update" {
+		return
+	}
+	_, _, afterKnown := environmentDeploymentPolicyPattern(after)
+	if !afterKnown {
+		add("unknown_change", "environment deployment-policy branch or tag pattern is missing or malformed")
+		if actionClass == "update" {
+			add("protection_weakening", "environment deployment-policy protection is removed or becomes ambiguous")
+		}
+		return
+	}
+	if actionClass == "create" {
+		return
+	}
+	beforeType, beforePattern, beforeKnown := environmentDeploymentPolicyPattern(before)
+	afterType, afterPattern, _ := environmentDeploymentPolicyPattern(after)
+	if !beforeKnown {
+		add("unknown_change", "prior environment deployment-policy branch or tag pattern is missing or malformed")
+		return
+	}
+	if beforeType != afterType || beforePattern != afterPattern {
+		add("protection_weakening", "environment deployment-policy ref type or pattern changes without a provable narrowing")
+	}
+}
+
+func environmentDeploymentPolicyPattern(value map[string]any) (string, string, bool) {
+	if value == nil {
+		return "", "", false
+	}
+	branchPattern, branchKnown := optionalPattern(value["branch_pattern"])
+	tagPattern, tagKnown := optionalPattern(value["tag_pattern"])
+	if !branchKnown || !tagKnown || (branchPattern == "") == (tagPattern == "") {
+		return "", "", false
+	}
+	if branchPattern != "" {
+		return "branch", branchPattern, true
+	}
+	return "tag", tagPattern, true
+}
+
+func optionalPattern(value any) (string, bool) {
+	if value == nil {
+		return "", true
+	}
+	pattern, ok := value.(string)
+	return pattern, ok
 }
 
 func environmentReviewerAuthorities(value any) (map[string]struct{}, bool) {
@@ -2134,7 +2547,22 @@ func catalogRepositoryPropertyAfterState(address string, after, catalog map[stri
 	return expectedKnown && actualKnown && equalStringSlices(expectedValues, actualValues)
 }
 
-func catalogOrganizationPropertyAfterState(address string, after, catalog map[string]any) bool {
+func catalogRepositoryActionsAccessAfterState(address string, after, catalog map[string]any) bool {
+	if after == nil || catalog == nil {
+		return false
+	}
+	key, ok := terraformInstanceKey(address)
+	if !ok || !exactIndexedAddress(address, "module.repository_governance.github_actions_repository_access_level.this", key) {
+		return false
+	}
+	repositories, _ := catalog["repositories"].(map[string]any)
+	repository, _ := repositories[key].(map[string]any)
+	return repository != nil &&
+		exactStringField(after, "repository", stringMapField(repository, "name")) &&
+		exactStringField(after, "access_level", stringMapField(repository, "actions_access_level"))
+}
+
+func catalogOrganizationPropertyAfterState(address string, after, catalog, observed map[string]any) bool {
 	if after == nil || catalog == nil {
 		return false
 	}
@@ -2143,6 +2571,10 @@ func catalogOrganizationPropertyAfterState(address string, after, catalog map[st
 		return false
 	}
 	organization, _ := catalog["organization"].(map[string]any)
+	migration, _ := organization["custom_property_migration"].(map[string]any)
+	if stringMapField(migration, "phase") == "retire" && !catalogCustomPropertyAssignmentsConverged(catalog, observed) {
+		return false
+	}
 	matches := 0
 	for _, rawProperty := range anySlice(organization["custom_properties"]) {
 		property, _ := rawProperty.(map[string]any)
@@ -2150,7 +2582,7 @@ func catalogOrganizationPropertyAfterState(address string, after, catalog map[st
 			continue
 		}
 		matches++
-		expectedValues, expectedKnown := normalizedStringList(property["allowed_values"])
+		expectedValues, expectedKnown := normalizedStringList(effectiveOrganizationPropertyAllowedValues(organization, property))
 		actualValues, actualKnown := normalizedStringList(after["allowed_values"])
 		if !expectedKnown || !actualKnown || !equalStringSlices(expectedValues, actualValues) ||
 			!exactStringField(after, "property_name", key) ||
@@ -2161,6 +2593,70 @@ func catalogOrganizationPropertyAfterState(address string, after, catalog map[st
 		}
 	}
 	return matches == 1
+}
+
+func catalogCustomPropertyAssignmentsConverged(catalog, observed map[string]any) bool {
+	if catalog == nil || observed == nil {
+		return false
+	}
+	repositories, _ := catalog["repositories"].(map[string]any)
+	liveRepositories, _ := observed["repositories"].(map[string]any)
+	liveProperties, _ := observed["repository_custom_properties"].(map[string]any)
+	if len(repositories) == 0 || len(liveRepositories) != len(repositories) {
+		return false
+	}
+	for _, rawRepository := range repositories {
+		repository, _ := rawRepository.(map[string]any)
+		name := stringMapField(repository, "name")
+		liveRepository, exists := liveRepositories[name].(map[string]any)
+		if name == "" || !exists || stringMapField(liveRepository, "name") != name {
+			return false
+		}
+		desiredProperties, _ := repository["custom_properties"].(map[string]any)
+		for propertyName, desiredValue := range desiredProperties {
+			liveValue, found := evidenceRepositoryPropertyValue(liveProperties[name], propertyName)
+			if !found || !canonicalSemanticEqual(desiredValue, liveValue) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func evidenceRepositoryPropertyValue(value any, propertyName string) (any, bool) {
+	for _, rawProperty := range anySlice(value) {
+		property, _ := rawProperty.(map[string]any)
+		if stringMapField(property, "property_name") == propertyName {
+			liveValue, exists := property["value"]
+			return liveValue, exists
+		}
+	}
+	return nil, false
+}
+
+func effectiveOrganizationPropertyAllowedValues(organization, property map[string]any) any {
+	values, known := normalizedStringList(property["allowed_values"])
+	if !known {
+		return property["allowed_values"]
+	}
+	migration, _ := organization["custom_property_migration"].(map[string]any)
+	if stringMapField(migration, "phase") != "preserve" {
+		return stringsToAny(values)
+	}
+	legacy, _ := migration["legacy_allowed_values"].(map[string]any)
+	legacyValues, legacyKnown := normalizedStringList(legacy[stringMapField(property, "name")])
+	if legacy[stringMapField(property, "name")] != nil && !legacyKnown {
+		return nil
+	}
+	values = append(values, legacyValues...)
+	sort.Strings(values)
+	unique := values[:0]
+	for _, value := range values {
+		if len(unique) == 0 || unique[len(unique)-1] != value {
+			unique = append(unique, value)
+		}
+	}
+	return stringsToAny(unique)
 }
 
 func catalogTeamAfterState(address string, after, catalog map[string]any) bool {
@@ -2290,9 +2786,9 @@ func catalogRulesetAfterState(address string, after, catalog, observed map[strin
 	enforcement := stringMapField(ruleset, "enforcement")
 	switch phase {
 	case "adopt":
-		enforcement = "disabled"
+		enforcement = observedRulesetEnforcement(observed, "", effectiveName, "disabled")
 	case "foundation":
-		enforcement = "evaluate"
+		enforcement = observedRulesetEnforcement(observed, "", effectiveName, "evaluate")
 	case "enforce":
 	default:
 		return false
@@ -2338,6 +2834,25 @@ func catalogRulesetAfterState(address string, after, catalog, observed map[strin
 		afterProjection[key] = value
 	}
 	return canonicalSemanticEqual(afterProjection, expected)
+}
+
+func observedRulesetEnforcement(observed map[string]any, repositoryName, rulesetName, fallback string) string {
+	if observed == nil || rulesetName == "" {
+		return fallback
+	}
+	var rulesets map[string]any
+	if repositoryName == "" {
+		rulesets, _ = observed["rulesets"].(map[string]any)
+	} else {
+		byRepository, _ := observed["repository_rulesets"].(map[string]any)
+		rulesets, _ = byRepository[repositoryName].(map[string]any)
+	}
+	ruleset, _ := rulesets[rulesetName].(map[string]any)
+	enforcement := stringMapField(ruleset, "enforcement")
+	if enforcement == "disabled" || enforcement == "evaluate" || enforcement == "active" {
+		return enforcement
+	}
+	return fallback
 }
 
 func physicalRulesetRules(source map[string]any, creatorGate bool, phase string) (map[string]any, bool) {
@@ -2581,6 +3096,93 @@ func criticalityRank(value string) int {
 	default:
 		return -1
 	}
+}
+
+func catalogEnvironmentVariableAfterState(address string, after, catalog map[string]any) bool {
+	if after == nil || catalog == nil {
+		return false
+	}
+	physicalKey, ok := terraformInstanceKey(address)
+	if !ok || !exactIndexedAddress(
+		address, "module.repository_environments.github_actions_environment_variable.this", physicalKey,
+	) {
+		return false
+	}
+	environments, _ := catalog["environments"].(map[string]any)
+	matches := 0
+	for environmentKey, rawEnvironment := range environments {
+		environment, _ := rawEnvironment.(map[string]any)
+		activation, _ := environment["activation"].(map[string]any)
+		if stringMapField(activation, "state") != "ready" {
+			continue
+		}
+		variables, _ := environment["variables"].(map[string]any)
+		for _, rawRepositoryReference := range anySlice(environment["repositories"]) {
+			repositoryReference, _ := rawRepositoryReference.(string)
+			repositoryName := catalogRepositoryName(repositoryReference, catalog)
+			if repositoryName == "" {
+				continue
+			}
+			for variableName, rawValue := range variables {
+				value, _ := rawValue.(string)
+				if physicalKey != environmentKey+":"+repositoryReference+":"+variableName {
+					continue
+				}
+				matches++
+				if value == "" ||
+					!exactStringField(after, "repository", repositoryName) ||
+					!exactStringField(after, "environment", stringMapField(environment, "name")) ||
+					!exactStringField(after, "variable_name", variableName) ||
+					!exactStringField(after, "value", value) {
+					return false
+				}
+			}
+		}
+	}
+	return matches == 1
+}
+
+func catalogEnvironmentDeploymentPolicyAfterState(address string, after, catalog map[string]any) bool {
+	if after == nil || catalog == nil {
+		return false
+	}
+	physicalKey, ok := terraformInstanceKey(address)
+	if !ok || !exactIndexedAddress(
+		address, "module.repository_environments.github_repository_environment_deployment_policy.this", physicalKey,
+	) {
+		return false
+	}
+	environments, _ := catalog["environments"].(map[string]any)
+	matches := 0
+	for environmentKey, rawEnvironment := range environments {
+		environment, _ := rawEnvironment.(map[string]any)
+		branchPolicy, _ := environment["deployment_branch_policy"].(map[string]any)
+		for _, rawRepositoryReference := range anySlice(environment["repositories"]) {
+			repositoryReference, _ := rawRepositoryReference.(string)
+			repositoryName := catalogRepositoryName(repositoryReference, catalog)
+			if repositoryName == "" {
+				continue
+			}
+			for _, policyType := range []string{"branch", "tag"} {
+				patterns := branchPolicy[policyType+"_patterns"]
+				for _, rawPattern := range anySlice(patterns) {
+					pattern, _ := rawPattern.(string)
+					expectedKey := environmentKey + ":" + repositoryReference + ":" + policyType + ":" + pattern
+					if expectedKey != physicalKey {
+						continue
+					}
+					matches++
+					actualType, actualPattern, known := environmentDeploymentPolicyPattern(after)
+					if !known || actualType != policyType || actualPattern != pattern ||
+						!exactStringField(after, "repository", repositoryName) ||
+						!exactStringField(after, "environment", stringMapField(environment, "name")) {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return matches == 1
 }
 
 func catalogEnvironmentAfterState(address string, after, catalog, observed map[string]any) bool {
@@ -2831,7 +3433,7 @@ func catalogActionPinRotation(before, after, catalog, policyInput map[string]any
 	for _, rawWorkflow := range anySlice(policyInput["workflows"]) {
 		workflow, _ := rawWorkflow.(map[string]any)
 		for _, use := range stringSlice(workflow["uses"]) {
-			source, commit, ok := parseActionPin(use)
+			source, commit, ok := parseWorkflowActionPin(use)
 			if !ok {
 				continue
 			}
@@ -2896,6 +3498,44 @@ func parseActionPin(value string) (string, string, bool) {
 		return "", "", false
 	}
 	return source, commit, true
+}
+
+// parseWorkflowActionPin accepts an action subpath such as
+// github/codeql-action/init@<sha> and binds it to the owner/repository pin in
+// the catalog. Provider-side allowed-action patterns remain exact owner/repo
+// references and continue to use parseActionPin.
+func parseWorkflowActionPin(value string) (string, string, bool) {
+	separator := strings.LastIndex(value, "@")
+	if separator <= 0 || separator == len(value)-1 {
+		return "", "", false
+	}
+	path := strings.Split(value[:separator], "/")
+	commit := value[separator+1:]
+	if !validWorkflowActionPath(path) ||
+		strings.ContainsAny(value[:separator], "*?[]{} ") || !gitSHA40Pattern.MatchString(commit) {
+		return "", "", false
+	}
+	return path[0] + "/" + path[1], commit, true
+}
+
+func validWorkflowActionPath(path []string) bool {
+	if len(path) < 2 {
+		return false
+	}
+	for _, segment := range path {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		for _, character := range segment {
+			if (character < 'a' || character > 'z') &&
+				(character < 'A' || character > 'Z') &&
+				(character < '0' || character > '9') &&
+				character != '_' && character != '.' && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // oidcChangeMatchesCatalog permits only the exact OIDC authority described by
@@ -3303,6 +3943,17 @@ func accessRank(value string) int {
 		return 5
 	default:
 		return -1
+	}
+}
+
+func repositoryActionsAccessRank(value any) (int, bool) {
+	switch strings.ToLower(fmt.Sprint(value)) {
+	case "none":
+		return 0, true
+	case "organization":
+		return 1, true
+	default:
+		return -1, false
 	}
 }
 

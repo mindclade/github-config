@@ -3,7 +3,14 @@ package validation
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/sha256"
+	"crypto/subtle"
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +24,10 @@ import (
 )
 
 const APIVersion = "github.mindclade.io/v1"
+
+const maxCodeownersBytes = 256 * 1024
+
+var infrastructureExportKeyVersionPattern = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/infrastructure-export/cryptoKeyVersions/[1-9][0-9]*$`)
 
 // Document is a validated source document before catalog flattening.
 type Document struct {
@@ -75,13 +86,14 @@ func ValidateCatalog(documents []*Document) error {
 		return errors.New("catalog has no documents")
 	}
 	teams := make(set)
+	teamSpecs := make(map[string]map[string]any)
 	repositories := make(set)
 	integrations := make(set)
 	environments := make(set)
-	environmentSpecs := make(map[string]map[string]any)
 	organizationMemberLogins := make(set)
 	organizationMemberPrincipals := make(map[string]string)
 	securityRequirements := make(map[string]bool)
+	var organizationSpec map[string]any
 	var outsideCollaboratorPolicy map[string]any
 	seenIDs := make(map[string]string)
 	for _, document := range documents {
@@ -91,6 +103,8 @@ func ValidateCatalog(documents []*Document) error {
 		}
 		seenIDs[key] = document.Path
 		switch document.Kind {
+		case "Organization":
+			organizationSpec, _ = document.Spec.(map[string]any)
 		case "SecurityPolicy":
 			if spec, ok := document.Spec.(map[string]any); ok {
 				for _, key := range []string{
@@ -103,6 +117,7 @@ func ValidateCatalog(documents []*Document) error {
 			}
 		case "Team":
 			teams.add(document.ID)
+			teamSpecs[strings.ToLower(document.ID)], _ = document.Spec.(map[string]any)
 		case "Repository":
 			repositories.add(document.ID)
 			if spec, ok := document.Spec.(map[string]any); ok {
@@ -113,10 +128,7 @@ func ValidateCatalog(documents []*Document) error {
 		case "Environment":
 			environments.add(document.ID)
 			if spec, ok := document.Spec.(map[string]any); ok {
-				name := stringValue(spec["name"])
-				environments.add(name)
-				environmentSpecs[strings.ToLower(document.ID)] = spec
-				environmentSpecs[strings.ToLower(name)] = spec
+				environments.add(stringValue(spec["name"]))
 			}
 		case "Membership":
 			spec, _ := document.Spec.(map[string]any)
@@ -147,6 +159,9 @@ func ValidateCatalog(documents []*Document) error {
 				organizationMemberPrincipals[strings.ToLower(login)] = principal
 			}
 		}
+	}
+	if err := validateCustomPropertyMigration(organizationSpec); err != nil {
+		return err
 	}
 	if outsideCollaboratorPolicy != nil {
 		maxRank, supported := permissionRank(stringValue(outsideCollaboratorPolicy["max_permission"]))
@@ -249,6 +264,21 @@ func ValidateCatalog(documents []*Document) error {
 		if grants[owner] < 4 {
 			return fmt.Errorf("%s: repository owner team %q must have maintain access", document.Path, owner)
 		}
+		if name == ".github" {
+			if stringValue(spec["actions_access_level"]) != "organization" {
+				return fmt.Errorf("%s: organization .github repository must share reusable workflows at organization access level", document.Path)
+			}
+			if grants["developer-platform"] != 4 || grants["security"] < 3 {
+				return fmt.Errorf("%s: CODEOWNERS teams require developer-platform maintain and security push-or-higher access", document.Path)
+			}
+			for _, teamID := range []string{"developer-platform", "security"} {
+				if stringValue(teamSpecs[teamID]["privacy"]) != "closed" {
+					return fmt.Errorf("%s: CODEOWNERS team %q must be organization-visible (privacy closed)", document.Path, teamID)
+				}
+			}
+		} else if stringValue(spec["actions_access_level"]) != "none" {
+			return fmt.Errorf("%s: only the organization .github repository may share Actions content", document.Path)
+		}
 		repositoryAccess[strings.ToLower(name)] = grants
 		repositoryAccess[strings.ToLower(document.ID)] = grants
 	}
@@ -329,56 +359,6 @@ func ValidateCatalog(documents []*Document) error {
 			if err := requireReferences(document.Path, "spec.rules.authorized_creator_integrations", valuesForKey(spec, "authorized_creator_integrations"), integrations); err != nil {
 				return err
 			}
-		case "RepositoryGate":
-			if err := requireReference(document.Path, "spec.repository", stringValue(spec["repository"]), repositories); err != nil {
-				return err
-			}
-			if err := requireReferences(document.Path, "spec.required_deployments", stringList(spec["required_deployments"]), environments); err != nil {
-				return err
-			}
-			checkContexts := make(set)
-			workflowPaths := make(set)
-			for _, check := range objectList(specObject(spec, "required_status_checks")["checks"]) {
-				context := stringValue(check["context"])
-				if checkContexts.has(context) {
-					return fmt.Errorf("%s: duplicate required status-check context %q", document.Path, context)
-				}
-				checkContexts.add(context)
-				workflowPaths.add(stringValue(check["workflow_path"]))
-			}
-			gateRepository := repositoryCanonicalNames[strings.ToLower(stringValue(spec["repository"]))]
-			reviewerTeams := make(set)
-			for _, environmentReference := range stringList(spec["required_deployments"]) {
-				environment := environmentSpecs[strings.ToLower(environmentReference)]
-				assigned := false
-				for _, repositoryReference := range stringList(environment["repositories"]) {
-					if repositoryCanonicalNames[strings.ToLower(repositoryReference)] == gateRepository {
-						assigned = true
-						break
-					}
-				}
-				if !assigned {
-					return fmt.Errorf("%s: required deployment %q is not assigned to repository %q", document.Path, environmentReference, stringValue(spec["repository"]))
-				}
-				reviewers := objectList(environment["required_reviewers"])
-				if len(reviewers) != 1 || stringValue(reviewers[0]["team"]) == "" {
-					return fmt.Errorf("%s: required deployment %q must name exactly one reviewer authority team", document.Path, environmentReference)
-				}
-				team := stringValue(reviewers[0]["team"])
-				if reviewerTeams.has(team) {
-					return fmt.Errorf("%s: required deployments must use distinct reviewer authority teams", document.Path)
-				}
-				reviewerTeams.add(team)
-				allowedWorkflows := make(set)
-				for _, workflow := range stringList(environment["allowed_workflows"]) {
-					allowedWorkflows.add(workflow)
-				}
-				for workflow := range workflowPaths {
-					if !allowedWorkflows.has(workflow) {
-						return fmt.Errorf("%s: required deployment %q does not allow authority workflow %q", document.Path, environmentReference, workflow)
-					}
-				}
-			}
 		case "Environment":
 			if err := requireReferences(document.Path, "spec.repositories", stringList(spec["repositories"]), repositories); err != nil {
 				return err
@@ -401,17 +381,36 @@ func ValidateCatalog(documents []*Document) error {
 				}
 			}
 			activation := specObject(spec, "activation")
+			if stringValue(spec["name"]) == "infrastructure-apply" {
+				if err := validateInfrastructureApplyHandoff(document.Path, spec, activation); err != nil {
+					return err
+				}
+			}
 			if stringValue(activation["state"]) == "ready" {
+				repositoriesWithAuthority := make(set)
+				workflowsWithAuthority := make(set)
 				for _, repositoryReference := range stringList(spec["repositories"]) {
 					repository := repositoryCanonicalNames[strings.ToLower(repositoryReference)]
 					for _, workflow := range stringList(spec["allowed_workflows"]) {
 						authority := environmentAuthorityKey(repository, workflow, stringValue(spec["name"]))
-						if _, exists := oidcEnvironmentAuthorities[authority]; !exists {
-							return fmt.Errorf(
-								"%s: ready environment workflow %q in repository %q has no exact immutable OIDC subject authority",
-								document.Path, workflow, repository,
-							)
+						if _, exists := oidcEnvironmentAuthorities[authority]; exists {
+							repositoriesWithAuthority.add(repository)
+							workflowsWithAuthority.add(workflow)
 						}
+					}
+					if !repositoriesWithAuthority.has(repository) {
+						return fmt.Errorf(
+							"%s: ready environment repository %q has no exact immutable OIDC subject authority through an allowed workflow",
+							document.Path, repository,
+						)
+					}
+				}
+				for _, workflow := range stringList(spec["allowed_workflows"]) {
+					if !workflowsWithAuthority.has(workflow) {
+						return fmt.Errorf(
+							"%s: ready environment workflow %q has no exact immutable OIDC subject authority in any listed repository",
+							document.Path, workflow,
+						)
 					}
 				}
 			}
@@ -466,6 +465,10 @@ func ValidateCatalog(documents []*Document) error {
 				}
 				subjectIDs.add(subjectID)
 				context := specObject(subject, "context")
+				// A GitHub OIDC subject is the issuer-visible claim tuple. Provider
+				// and service-account destinations are consequences of that tuple,
+				// not additional discriminators. Allowing two destinations to share
+				// one tuple makes the effective identity ambiguous at token exchange.
 				authorityKey := strings.Join([]string{
 					stringValue(subject["repository"]), stringValue(subject["workflow"]),
 					stringValue(context["type"]), stringValue(context["value"]), stringValue(subject["audience"]),
@@ -484,6 +487,283 @@ func ValidateCatalog(documents []*Document) error {
 					}
 				}
 			}
+			if err := validateCanonicalOIDCIdentities(document.Path, spec); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateCanonicalOIDCIdentities(path string, policy map[string]any) error {
+	type expectedSubject struct {
+		repository, workflow, contextType, contextValue, audience, provider, serviceAccount string
+	}
+	expected := map[string]expectedSubject{
+		"github-config-drift-plan": {
+			"github-config", ".github/workflows/drift-detection.yml", "ref", "refs/heads/main",
+			"sts.googleapis.com", "github-config-plan", "github-config-plan",
+		},
+		"github-config-protected-plan": {
+			"github-config", ".github/workflows/protected-apply.yml", "environment", "trusted-build",
+			"sts.googleapis.com", "github-config-plan", "github-config-plan",
+		},
+		"github-config-protected-apply": {
+			"github-config", ".github/workflows/protected-apply.yml", "environment", "infrastructure-apply",
+			"sts.googleapis.com", "github-config-apply", "github-config-apply",
+		},
+		"bootstrap-protected-plan": {
+			"bootstrap", ".github/workflows/protected-apply.yml", "environment", "trusted-build",
+			"sts.googleapis.com", "github-actions-plan", "bootstrap-plan",
+		},
+		"bootstrap-protected-apply": {
+			"bootstrap", ".github/workflows/protected-apply.yml", "environment", "infrastructure-apply",
+			"sts.googleapis.com", "github-actions-apply", "bootstrap-apply",
+		},
+		"bootstrap-recovery-verification": {
+			"bootstrap", ".github/workflows/recovery-verification.yml", "environment", "infrastructure-apply",
+			"sts.googleapis.com", "github-actions-recovery", "bootstrap-recovery",
+		},
+		"infrastructure-drift-plan": {
+			"infrastructure-live", ".github/workflows/drift-detection.yml", "environment", "trusted-build",
+			"sts.googleapis.com", "infrastructure-plan", "infrastructure-plan",
+		},
+		"infrastructure-ci-evidence-verifier": {
+			"infrastructure-live", ".github/workflows/disaster-recovery.yml", "environment", "infrastructure-apply",
+			"canonical-provider-resource", "verifier", "ci-evidence-verifier",
+		},
+	}
+	for _, environment := range []string{"development", "staging", "production", "restricted"} {
+		for _, capability := range []string{"plan", "apply"} {
+			identity := environment + "-" + capability
+			audience := "https://github.mindclade.io/oidc/infrastructure-live/" + environment + "/" + capability
+			context := "trusted-build"
+			if capability == "apply" {
+				context = "infrastructure-apply"
+			}
+			expected["infrastructure-live-"+identity] = expectedSubject{
+				"infrastructure-live", ".github/workflows/protected-apply.yml", "environment", context,
+				audience, identity, identity,
+			}
+		}
+	}
+	seen := make(set)
+	for _, subject := range objectList(policy["subjects"]) {
+		id := stringValue(subject["id"])
+		requirement, exists := expected[id]
+		if !exists {
+			return fmt.Errorf("%s: unsupported canonical OIDC subject identity %q", path, id)
+		}
+		if seen.has(id) {
+			return fmt.Errorf("%s: duplicate canonical OIDC subject identity %q", path, id)
+		}
+		seen.add(id)
+		context := specObject(subject, "context")
+		provider := stringValue(subject["workload_identity_provider_ref"])
+		serviceAccount := stringValue(subject["service_account_ref"])
+		if stringValue(subject["repository"]) != requirement.repository ||
+			stringValue(subject["workflow"]) != requirement.workflow ||
+			stringValue(context["type"]) != requirement.contextType ||
+			stringValue(context["value"]) != requirement.contextValue ||
+			stringValue(subject["audience"]) != requirement.audience ||
+			!boolValue(subject["require_immutable_workflow_ref"]) ||
+			provider != requirement.provider || serviceAccount != requirement.serviceAccount {
+			return fmt.Errorf("%s: canonical OIDC identity %q does not match its exact repository, workflow, context, audience, provider, and service-account binding", path, id)
+		}
+	}
+	missing := make([]string, 0)
+	for id := range expected {
+		if !seen.has(id) {
+			missing = append(missing, id)
+		}
+	}
+	sort.Strings(missing)
+	if len(missing) != 0 {
+		return fmt.Errorf("%s: missing exact canonical OIDC identities: %s", path, strings.Join(missing, ", "))
+	}
+	// Bootstrap source declares every identity below, but the connected
+	// qualification contract keeps each provider/account pair activation
+	// disabled. Keep every gap explicit so a source declaration cannot become
+	// an accidental promise of exchange authority.
+	activation := specObject(policy, "activation")
+	if stringValue(activation["state"]) != "blocked" {
+		return fmt.Errorf("%s: OIDC activation must remain blocked while canonical bootstrap identities are not connected-qualified", path)
+	}
+	blockers := make(set)
+	for _, blocker := range stringList(activation["blockers"]) {
+		blockers.add(blocker)
+	}
+	for _, required := range []string{
+		"github-config-drift-identity-not-connected-qualified",
+		"github-config-protected-plan-identity-not-connected-qualified",
+		"github-config-protected-apply-identity-not-connected-qualified",
+		"infrastructure-drift-plan-identity-not-connected-qualified",
+		"ci-evidence-verifier-canonical-audience-handoff-not-connected-qualified",
+	} {
+		if !blockers.has(required) {
+			return fmt.Errorf("%s: unavailable canonical OIDC identity requires activation blocker %q", path, required)
+		}
+	}
+	return nil
+}
+
+func validateInfrastructureApplyHandoff(path string, spec, activation map[string]any) error {
+	variables := specObject(spec, "variables")
+	if stringValue(activation["state"]) != "ready" {
+		if len(variables) != 0 {
+			return fmt.Errorf("%s: blocked infrastructure-apply must omit connected handoff variables", path)
+		}
+		blockers := make(set)
+		for _, blocker := range stringList(activation["blockers"]) {
+			blockers.add(blocker)
+		}
+		for _, required := range []string{
+			"ci-evidence-verifier-handoff-not-connected-qualified",
+			"infrastructure-export-verifier-handoff-not-connected-qualified",
+		} {
+			if !blockers.has(required) {
+				return fmt.Errorf("%s: blocked infrastructure-apply requires activation blocker %q", path, required)
+			}
+		}
+		return nil
+	}
+	if len(stringList(activation["blockers"])) != 0 {
+		return fmt.Errorf("%s: ready infrastructure-apply must have no activation blockers", path)
+	}
+	baselineKeyVersion := ""
+	baselinePublicKey := ""
+	baselineDigest := ""
+	for _, environment := range []string{"DEVELOPMENT", "STAGING", "PRODUCTION", "RESTRICTED"} {
+		keyVersionName := "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_" + environment
+		publicKeyName := "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_" + environment
+		publicKeyDigestName := "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_" + environment
+		keyVersion := stringValue(variables[keyVersionName])
+		if !infrastructureExportKeyVersionPattern.MatchString(keyVersion) {
+			return fmt.Errorf("%s: %s must bind the exact bootstrap-signing/infrastructure-export EC_SIGN_P256_SHA256 key version", path, keyVersionName)
+		}
+		encodedPublicKey := stringValue(variables[publicKeyName])
+		publicKeyPEM, err := base64.StdEncoding.Strict().DecodeString(encodedPublicKey)
+		if err != nil || base64.StdEncoding.EncodeToString(publicKeyPEM) != encodedPublicKey || len(publicKeyPEM) > 16*1024 {
+			return fmt.Errorf("%s: %s must be canonical bounded base64", path, publicKeyName)
+		}
+		block, trailing := pem.Decode(publicKeyPEM)
+		if block == nil || block.Type != "PUBLIC KEY" || len(bytes.TrimSpace(trailing)) != 0 {
+			return fmt.Errorf("%s: %s must contain exactly one PKIX PUBLIC KEY PEM block", path, publicKeyName)
+		}
+		parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return fmt.Errorf("%s: %s is not valid PKIX public-key DER", path, publicKeyName)
+		}
+		publicKey, ok := parsed.(*ecdsa.PublicKey)
+		if !ok || publicKey.Curve.Params().Name != "P-256" {
+			return fmt.Errorf("%s: %s must be the P-256 public key for EC_SIGN_P256_SHA256", path, publicKeyName)
+		}
+		canonicalDER, err := x509.MarshalPKIXPublicKey(publicKey)
+		if err != nil || !bytes.Equal(canonicalDER, block.Bytes) {
+			return fmt.Errorf("%s: %s must contain canonical SPKI DER", path, publicKeyName)
+		}
+		digest := sha256.Sum256(canonicalDER)
+		actualDigest := "sha256:" + hex.EncodeToString(digest[:])
+		expectedDigest := stringValue(variables[publicKeyDigestName])
+		if subtle.ConstantTimeCompare([]byte(actualDigest), []byte(expectedDigest)) != 1 {
+			return fmt.Errorf("%s: %s does not match the decoded SPKI DER", path, publicKeyDigestName)
+		}
+		if baselineKeyVersion == "" {
+			baselineKeyVersion = keyVersion
+			baselinePublicKey = encodedPublicKey
+			baselineDigest = expectedDigest
+			continue
+		}
+		if keyVersion != baselineKeyVersion || encodedPublicKey != baselinePublicKey ||
+			subtle.ConstantTimeCompare([]byte(expectedDigest), []byte(baselineDigest)) != 1 {
+			return fmt.Errorf("%s: all environment export-verifier tuples must bind the one bootstrap infrastructure-export key version", path)
+		}
+	}
+	return nil
+}
+
+// ValidateCodeowners binds every local organization-team owner to a declared,
+// visible team with explicit write-or-higher access to the repository catalog
+// entry. Missing files are left to the repository's exact Blueprint inventory
+// test so catalog-only fixtures can remain minimal.
+func ValidateCodeowners(root string, documents []*Document, repositoryID string) error {
+	path := root + string(os.PathSeparator) + ".github" + string(os.PathSeparator) + "CODEOWNERS"
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect .github/CODEOWNERS: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() > maxCodeownersBytes {
+		return fmt.Errorf(".github/CODEOWNERS must be a regular, non-symlink file no larger than %d bytes", maxCodeownersBytes)
+	}
+	source, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read .github/CODEOWNERS: %w", err)
+	}
+
+	teams := make(map[string]map[string]any)
+	var repository map[string]any
+	for _, document := range documents {
+		spec, _ := document.Spec.(map[string]any)
+		switch document.Kind {
+		case "Team":
+			teams[strings.ToLower(document.ID)] = spec
+		case "Repository":
+			if strings.EqualFold(document.ID, repositoryID) || strings.EqualFold(stringValue(spec["name"]), repositoryID) {
+				if repository != nil {
+					return fmt.Errorf("repository %q is ambiguous", repositoryID)
+				}
+				repository = spec
+			}
+		}
+	}
+	if repository == nil {
+		return fmt.Errorf("repository %q is not declared", repositoryID)
+	}
+	grants := make(map[string]int)
+	for _, grant := range objectList(repository["team_grants"]) {
+		rank, ok := permissionRank(stringValue(grant["permission"]))
+		if ok {
+			grants[strings.ToLower(stringValue(grant["team"]))] = rank
+		}
+	}
+
+	owners := make(set)
+	for lineNumber, rawLine := range strings.Split(string(source), "\n") {
+		line := strings.TrimSpace(strings.SplitN(rawLine, "#", 2)[0])
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			return fmt.Errorf(".github/CODEOWNERS:%d has no owner", lineNumber+1)
+		}
+		for _, owner := range fields[1:] {
+			if !strings.HasPrefix(strings.ToLower(owner), "@mindclade/") {
+				return fmt.Errorf(".github/CODEOWNERS:%d owner %q is not a declared Mindclade team", lineNumber+1, owner)
+			}
+			slug := strings.ToLower(strings.TrimPrefix(strings.ToLower(owner), "@mindclade/"))
+			if slug == "" {
+				return fmt.Errorf(".github/CODEOWNERS:%d contains an empty team owner", lineNumber+1)
+			}
+			owners.add(slug)
+		}
+	}
+	if len(owners) == 0 {
+		return errors.New(".github/CODEOWNERS declares no organization team")
+	}
+	for owner := range owners {
+		team := teams[owner]
+		if team == nil {
+			return fmt.Errorf("CODEOWNERS team %q is not declared", owner)
+		}
+		if stringValue(team["privacy"]) != "closed" {
+			return fmt.Errorf("CODEOWNERS team %q must be organization-visible (privacy closed)", owner)
+		}
+		if grants[owner] < 3 {
+			return fmt.Errorf("CODEOWNERS team %q requires explicit push-or-higher repository access", owner)
 		}
 	}
 	return nil
@@ -536,6 +816,16 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 			}
 		}
 		desiredOrganization, _ := desired["organization"].(map[string]any)
+		migration := specObject(desiredOrganization, "custom_property_migration")
+		if (phase == "foundation" || phase == "enforce") && stringValue(migration["phase"]) == "retire" &&
+			!customPropertyAssignmentsConverged(desired, observed) {
+			add("CUSTOM_PROPERTY_RETIREMENT_UNQUALIFIED", "legacy custom-property values may be retired only after every managed repository assignment is observed at its desired value")
+		}
+		if phase == "enforce" {
+			if stringValue(migration["phase"]) != "retire" || len(specObject(migration, "legacy_allowed_values")) != 0 {
+				add("CUSTOM_PROPERTY_MIGRATION_PENDING", "legacy custom-property values must remain unioned until assignments converge and a reviewed retirement change removes them")
+			}
+		}
 		observedOrganization, _ := observed["organization"].(map[string]any)
 		desiredLogin := stringValue(desiredOrganization["organization_login"])
 		observedLogin := stringValue(observedOrganization["login"])
@@ -607,35 +897,6 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 				add("REVIEWER_QUORUM_UNSATISFIED", fmt.Sprintf("environment %q requires %d distinct principals but reviewer teams provide %d", id, minimum, len(available)))
 			}
 		}
-		repositoryGates, _ := desired["repository_gates"].(map[string]any)
-		for gateID, value := range repositoryGates {
-			gate, _ := value.(map[string]any)
-			authorities := make([]set, 0, len(stringList(gate["required_deployments"])))
-			for _, environmentID := range stringList(gate["required_deployments"]) {
-				environment, _ := environments[environmentID].(map[string]any)
-				principals := make(set)
-				for _, reviewer := range objectList(environment["required_reviewers"]) {
-					for principal := range teamPrincipals[strings.ToLower(stringValue(reviewer["team"]))] {
-						principals.add(principal)
-					}
-				}
-				authorities = append(authorities, principals)
-			}
-			distinct := true
-			for left := 0; left < len(authorities) && distinct; left++ {
-				for right := left + 1; right < len(authorities) && distinct; right++ {
-					for principal := range authorities[left] {
-						if authorities[right].has(principal) {
-							distinct = false
-							break
-						}
-					}
-				}
-			}
-			if !distinct {
-				add("REVIEW_AUTHORITIES_NOT_DISTINCT", fmt.Sprintf("repository gate %q reviewer authorities share one or more active human principals", gateID))
-			}
-		}
 		validateDesiredAccess(desired, add)
 		capabilities, _ := observed["capabilities"].(map[string]any)
 		securityPolicy, _ := desired["security_policy"].(map[string]any)
@@ -683,12 +944,9 @@ func PreflightReport(desired, observed map[string]any, phase string) map[string]
 	qualifiedIntegrationActors := make(map[string]any)
 	qualifiedStatusCheckActors := make(map[string]any)
 	if phase == "foundation" || phase == "enforce" {
-		// The organization-installations endpoint does not expose the exact
-		// selected-repository scope and the strict catalog intentionally has no
-		// bootstrap App disposition document yet. Do not trust an observed JSON
-		// boolean as authority; mutation phases remain blocked until a future
-		// canonical, TTL-bounded bootstrap attestation contract is implemented.
-		add("INSTALLATION_INVENTORY_UNQUALIFIED", "GitHub App installation authority and complete selected-repository dispositions are not bootstrap-qualified")
+		if err := validateInstallationInventoryQualification(desired, observed, time.Now().UTC()); err != nil {
+			add("INSTALLATION_INVENTORY_UNQUALIFIED", "GitHub App installation inventory is not bootstrap-qualified: "+err.Error())
+		}
 		activation := desired["activation"]
 		if activation == nil {
 			activation = desired
@@ -898,10 +1156,10 @@ func adoptionBindings(
 ) (map[string]any, []string) {
 	maps := make(map[string]any)
 	for _, key := range []string{
-		"adopted_team_ids", "adopted_repository_names", "adopted_ruleset_ids",
+		"adopted_team_ids", "adopted_repository_names", "adopted_ruleset_ids", "adopted_ruleset_enforcements",
 		"adopted_environment_ids", "adopted_environment_policy_ids",
 		"adopted_organization_oidc_templates", "adopted_organization_custom_properties",
-		"adopted_repository_oidc_templates", "adopted_repository_custom_properties",
+		"adopted_repository_actions_access_levels", "adopted_repository_oidc_templates", "adopted_repository_custom_properties",
 		"adopted_memberships", "adopted_team_memberships",
 		"adopted_team_repository_grants", "adopted_security_manager_assignments",
 		"adopted_dependabot_security_updates", "adopted_outside_collaborator_grants",
@@ -911,6 +1169,7 @@ func adoptionBindings(
 	teamIDs := maps["adopted_team_ids"].(map[string]any)
 	repositoryNames := maps["adopted_repository_names"].(map[string]any)
 	rulesetIDs := maps["adopted_ruleset_ids"].(map[string]any)
+	rulesetEnforcements := maps["adopted_ruleset_enforcements"].(map[string]any)
 	environmentIDs := maps["adopted_environment_ids"].(map[string]any)
 	environmentPolicyIDs := maps["adopted_environment_policy_ids"].(map[string]any)
 	issues := make([]string, 0)
@@ -962,10 +1221,13 @@ func adoptionBindings(
 			if configured := stringValue(spec["name"]); configured != "" {
 				name = configured
 			}
-			bindObservedRulesetID(id, name, observedRulesets, rulesetIDs, &issues)
+			bindObservedRulesetAdoption(id, name, "", observedRulesets, rulesetIDs, rulesetEnforcements, &issues)
 			rules, _ := spec["rules"].(map[string]any)
 			if stringValue(spec["target"]) == "tag" && boolValue(rules["creation_restricted"]) {
-				bindObservedRulesetID(id+"--creator-gate", name+"-creator-gate", observedRulesets, rulesetIDs, &issues)
+				bindObservedRulesetAdoption(
+					id+"--creator-gate", name+"-creator-gate", "", observedRulesets,
+					rulesetIDs, rulesetEnforcements, &issues,
+				)
 			}
 		}
 	}
@@ -999,6 +1261,7 @@ func bindAdditionalAdoptions(
 	organizationProperties := maps["adopted_organization_custom_properties"].(map[string]any)
 	observedOrganizationProperties := objectList(observed["organization_custom_properties"])
 	for _, property := range objectList(organization["custom_properties"]) {
+		property = effectiveCustomPropertyDefinition(organization, property)
 		name := stringValue(property["name"])
 		for _, live := range observedOrganizationProperties {
 			liveName := stringValue(live["property_name"])
@@ -1051,11 +1314,13 @@ func bindAdditionalAdoptions(
 
 	desiredRepositories, _ := desired["repositories"].(map[string]any)
 	observedOIDCRepositories, _ := observed["repository_oidc_policies"].(map[string]any)
+	observedRepositoryActionsAccess, _ := observed["repository_actions_access_levels"].(map[string]any)
 	observedRepositoryProperties, _ := observed["repository_custom_properties"].(map[string]any)
 	observedRepositoryGrants, _ := observed["repository_team_grants"].(map[string]any)
 	observedDependabot, _ := observed["repository_dependabot_security_updates"].(map[string]any)
 	observedCollaborators, _ := observed["repository_direct_collaborators"].(map[string]any)
 	adoptedRepositoryOIDC := maps["adopted_repository_oidc_templates"].(map[string]any)
+	adoptedRepositoryActionsAccess := maps["adopted_repository_actions_access_levels"].(map[string]any)
 	adoptedRepositoryProperties := maps["adopted_repository_custom_properties"].(map[string]any)
 	adoptedTeamGrants := maps["adopted_team_repository_grants"].(map[string]any)
 	adoptedDependabot := maps["adopted_dependabot_security_updates"].(map[string]any)
@@ -1065,6 +1330,10 @@ func bindAdditionalAdoptions(
 		repositoryName := stringValue(repository["name"])
 		if stringValue(repositoryNames[repositoryKey]) != repositoryName {
 			continue
+		}
+		if liveAccess, ok := observedRepositoryActionsAccess[repositoryName].(map[string]any); ok &&
+			stringValue(liveAccess["access_level"]) == stringValue(repository["actions_access_level"]) {
+			adoptedRepositoryActionsAccess[repositoryKey] = repositoryName
 		}
 		if liveOIDC, ok := observedOIDCRepositories[repositoryName].(map[string]any); ok &&
 			liveOIDC["use_default"] == false &&
@@ -1255,10 +1524,10 @@ func normalizeSemanticValue(value any) any {
 	}
 }
 
-func bindObservedRulesetID(
-	key, name string,
+func bindObservedRulesetAdoption(
+	key, name, repositoryName string,
 	observedRulesets map[string]any,
-	destination map[string]any,
+	identifiers, enforcements map[string]any,
 	issues *[]string,
 ) {
 	rawRuleset, exists := observedRulesets[name]
@@ -1271,7 +1540,17 @@ func bindObservedRulesetID(
 		*issues = append(*issues, fmt.Sprintf("observed ruleset %q has no positive numeric id", name))
 		return
 	}
-	destination[key] = rulesetID
+	enforcement := stringValue(ruleset["enforcement"])
+	if enforcement != "disabled" && enforcement != "evaluate" && enforcement != "active" {
+		*issues = append(*issues, fmt.Sprintf("observed ruleset %q has invalid enforcement %q", name, enforcement))
+		return
+	}
+	if repositoryName == "" {
+		identifiers[key] = rulesetID
+	} else {
+		identifiers[key] = fmt.Sprintf("%s:%d", repositoryName, rulesetID)
+	}
+	enforcements[key] = enforcement
 }
 
 func bindObservedEnvironments(
@@ -1390,24 +1669,13 @@ func qualifiedStatusCheckIDs(
 	}
 	managed, _ := observed["managed_projection"].(map[string]any)
 	observedRulesets, _ := managed["rulesets"].(map[string]any)
-	desiredRulesets, _ := desired["rulesets"].(map[string]any)
-	for rulesetID, rawSpec := range desiredRulesets {
-		spec, _ := rawSpec.(map[string]any)
-		rules := specObject(spec, "rules")
-		requiredChecks, _ := rules["required_status_checks"].(map[string]any)
-		if requiredChecks == nil {
-			continue
-		}
-		observedRuleset, _ := observedRulesets[rulesetID].(map[string]any)
-		observedRules := specObject(observedRuleset, "rules")
-		observedRequired, _ := observedRules["required_status_checks"].(map[string]any)
-		observedChecks := objectList(observedRequired["checks"])
+	qualifyChecks := func(controlType, controlID string, requiredChecks map[string]any, observedChecks []map[string]any) {
 		for _, check := range objectList(requiredChecks["checks"]) {
 			issuer := stringValue(check["issuer_type"])
 			context := stringValue(check["context"])
 			integrationID := integerValue(check["integration_id"])
 			if issuer == "" || integrationID <= 0 {
-				add("STATUS_CHECK_INTEGRATION_UNQUALIFIED", fmt.Sprintf("ruleset %q check %q lacks a positive reviewed integration id", rulesetID, context))
+				add("STATUS_CHECK_INTEGRATION_UNQUALIFIED", fmt.Sprintf("%s %q check %q lacks a positive reviewed integration id", controlType, controlID, context))
 				continue
 			}
 			if prior, exists := result[issuer]; exists && integerValue(prior) != integrationID {
@@ -1422,11 +1690,24 @@ func qualifiedStatusCheckIDs(
 				}
 			}
 			if !matched {
-				add("STATUS_CHECK_INTEGRATION_UNQUALIFIED", fmt.Sprintf("ruleset %q check %q does not match complete live ruleset evidence", rulesetID, context))
+				add("STATUS_CHECK_INTEGRATION_UNQUALIFIED", fmt.Sprintf("%s %q check %q does not match complete live ruleset evidence", controlType, controlID, context))
 				continue
 			}
 			result[issuer] = integrationID
 		}
+	}
+	desiredRulesets, _ := desired["rulesets"].(map[string]any)
+	for rulesetID, rawSpec := range desiredRulesets {
+		spec, _ := rawSpec.(map[string]any)
+		rules := specObject(spec, "rules")
+		requiredChecks, _ := rules["required_status_checks"].(map[string]any)
+		if requiredChecks == nil {
+			continue
+		}
+		observedRuleset, _ := observedRulesets[rulesetID].(map[string]any)
+		observedRules := specObject(observedRuleset, "rules")
+		observedRequired, _ := observedRules["required_status_checks"].(map[string]any)
+		qualifyChecks("ruleset", rulesetID, requiredChecks, objectList(observedRequired["checks"]))
 	}
 	return result
 }
@@ -1468,6 +1749,92 @@ func membershipEntries(spec any) []map[string]any {
 		}
 	}
 	return objectList(spec)
+}
+
+func validateCustomPropertyMigration(organization map[string]any) error {
+	if organization == nil {
+		return errors.New("organization custom-property migration is missing")
+	}
+	definitions := make(map[string]set)
+	for _, property := range objectList(organization["custom_properties"]) {
+		name := stringValue(property["name"])
+		allowed := make(set)
+		for _, value := range stringList(property["allowed_values"]) {
+			allowed.add(value)
+		}
+		definitions[name] = allowed
+	}
+	migration := specObject(organization, "custom_property_migration")
+	phase := stringValue(migration["phase"])
+	legacy := specObject(migration, "legacy_allowed_values")
+	if phase == "retire" && len(legacy) != 0 {
+		return errors.New("organization custom-property retirement requires an empty legacy_allowed_values map")
+	}
+	for name, rawValues := range legacy {
+		allowed, exists := definitions[name]
+		if !exists {
+			return fmt.Errorf("organization custom-property migration references undeclared definition %q", name)
+		}
+		values := stringList(rawValues)
+		if len(values) == 0 {
+			return fmt.Errorf("organization custom-property migration for %q has no legacy values", name)
+		}
+		for _, value := range values {
+			if allowed.has(value) {
+				return fmt.Errorf("organization custom-property migration value %q for %q is already desired", value, name)
+			}
+		}
+	}
+	return nil
+}
+
+func effectiveCustomPropertyDefinition(organization, property map[string]any) map[string]any {
+	result := make(map[string]any, len(property))
+	for key, value := range property {
+		result[key] = value
+	}
+	migration := specObject(organization, "custom_property_migration")
+	if stringValue(migration["phase"]) != "preserve" {
+		return result
+	}
+	legacy := specObject(migration, "legacy_allowed_values")
+	values := append(stringList(property["allowed_values"]), stringList(legacy[stringValue(property["name"])])...)
+	sort.Strings(values)
+	unique := values[:0]
+	for _, value := range values {
+		if len(unique) == 0 || unique[len(unique)-1] != value {
+			unique = append(unique, value)
+		}
+	}
+	result["allowed_values"] = stringsToAny(unique)
+	return result
+}
+
+func customPropertyAssignmentsConverged(desired, observed map[string]any) bool {
+	desiredRepositories, _ := desired["repositories"].(map[string]any)
+	observedRepositories, _ := observed["repositories"].(map[string]any)
+	observedProperties, _ := observed["repository_custom_properties"].(map[string]any)
+	if len(desiredRepositories) == 0 || len(observedRepositories) != len(desiredRepositories) {
+		return false
+	}
+	for _, rawRepository := range desiredRepositories {
+		repository, _ := rawRepository.(map[string]any)
+		repositoryName := stringValue(repository["name"])
+		if repositoryName == "" {
+			return false
+		}
+		liveRepository, exists := observedRepositories[repositoryName].(map[string]any)
+		if !exists || stringValue(liveRepository["name"]) != repositoryName {
+			return false
+		}
+		for propertyName, desiredValue := range specObject(repository, "custom_properties") {
+			observedValue, found := observedRepositoryPropertyValue(observedProperties[repositoryName], propertyName)
+			if !found || !sameSemanticValue(desiredValue, observedValue) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func objectList(value any) []map[string]any {
@@ -1603,6 +1970,112 @@ func integrationQualified(id string, desired, observed, observedState map[string
 		}
 	}
 	return true
+}
+
+var bootstrapInventoryWorkflowPattern = regexp.MustCompile(`^mindclade/bootstrap/\.github/workflows/protected-apply\.yml@([0-9a-f]{40})$`)
+
+func validateInstallationInventoryQualification(desired, observed map[string]any, now time.Time) error {
+	organization, _ := desired["organization"].(map[string]any)
+	qualification := specObject(organization, "installation_inventory_qualification")
+	if stringValue(qualification["state"]) != "qualified" || stringValue(qualification["authority"]) != "bootstrap" {
+		return errors.New("the closed-world bootstrap attestation is not qualified")
+	}
+	inventory, _ := observed["installation_inventory"].(map[string]any)
+	if !boolValue(inventory["api_inventory_complete"]) {
+		return errors.New("the live installation API inventory is incomplete")
+	}
+	sourceSHA := stringValue(qualification["source_sha"])
+	workflowMatch := bootstrapInventoryWorkflowPattern.FindStringSubmatch(stringValue(qualification["workflow_ref"]))
+	if !integrationSourceSHAPattern.MatchString(sourceSHA) || len(workflowMatch) != 2 || workflowMatch[1] != sourceSHA {
+		return errors.New("attestation workflow_ref must bind the exact bootstrap protected-apply source SHA")
+	}
+	createdText := stringValue(qualification["created_at"])
+	expiresText := stringValue(qualification["expires_at"])
+	createdAt, createdErr := time.Parse(time.RFC3339, createdText)
+	expiresAt, expiresErr := time.Parse(time.RFC3339, expiresText)
+	if createdErr != nil || expiresErr != nil || !strings.HasSuffix(createdText, "Z") || !strings.HasSuffix(expiresText, "Z") {
+		return errors.New("attestation timestamps must be RFC3339 UTC values ending in Z")
+	}
+	if !expiresAt.After(createdAt) || expiresAt.Sub(createdAt) > maximumIntegrationAttestationTTL || !expiresAt.After(now) {
+		return errors.New("attestation must be unexpired with a validity window no longer than seven days")
+	}
+	canonical, err := canonicalInstallationInventoryQualification(qualification)
+	if err != nil {
+		return fmt.Errorf("canonicalize attestation: %w", err)
+	}
+	if digest := stringValue(qualification["evidence_digest"]); !validSHA256Digest(digest) || digest != rendering.Digest(canonical) {
+		return errors.New("attestation evidence_digest does not match its canonical content")
+	}
+	desiredIntegrations, _ := desired["integrations"].(map[string]any)
+	observedIntegrations, _ := observed["integrations"].(map[string]any)
+	dispositions := objectList(qualification["installations"])
+	if int64(len(dispositions)) != integerValue(inventory["total_count"]) || len(dispositions) != len(observedIntegrations) {
+		return errors.New("attestation does not disposition every live installation exactly once")
+	}
+	seenSlugs := make(map[string]struct{}, len(dispositions))
+	seenInstallationIDs := make(map[int64]struct{}, len(dispositions))
+	qualifiedCatalog := make(map[string]struct{}, len(desiredIntegrations))
+	for _, disposition := range dispositions {
+		slug := strings.ToLower(stringValue(disposition["app_slug"]))
+		appID := integerValue(disposition["app_id"])
+		installationID := integerValue(disposition["installation_id"])
+		if slug == "" || appID <= 0 || installationID <= 0 {
+			return errors.New("installation dispositions require canonical slugs and positive immutable IDs")
+		}
+		if _, duplicate := seenSlugs[slug]; duplicate {
+			return fmt.Errorf("attestation contains duplicate App slug %q", slug)
+		}
+		if _, duplicate := seenInstallationIDs[installationID]; duplicate {
+			return fmt.Errorf("attestation contains duplicate installation ID %d", installationID)
+		}
+		seenSlugs[slug] = struct{}{}
+		seenInstallationIDs[installationID] = struct{}{}
+		live, exists := observedIntegrations[slug].(map[string]any)
+		if !exists || integerValue(live["actor_id"]) != appID || integerValue(live["installation_id"]) != installationID || !strings.EqualFold(stringValue(live["app_slug"]), slug) {
+			return fmt.Errorf("attestation disposition for %q does not match the live installation", slug)
+		}
+		switch stringValue(disposition["disposition"]) {
+		case "catalog":
+			integrationID := stringValue(disposition["integration_id"])
+			desiredIntegration, exists := desiredIntegrations[integrationID].(map[string]any)
+			if !exists || !strings.EqualFold(integrationID, slug) {
+				return fmt.Errorf("catalog disposition %q does not bind its exact integration", slug)
+			}
+			integrationQualification := specObject(desiredIntegration, "qualification")
+			if stringValue(disposition["integration_evidence_digest"]) != stringValue(integrationQualification["evidence_digest"]) {
+				return fmt.Errorf("catalog disposition %q does not bind the integration attestation digest", slug)
+			}
+			if !integrationQualified(integrationID, desiredIntegration, live, observed) {
+				return fmt.Errorf("catalog integration %q is not independently qualified against live scope", integrationID)
+			}
+			qualifiedCatalog[integrationID] = struct{}{}
+		case "approved_external", "retirement_pending":
+			if _, catalogued := desiredIntegrations[slug]; catalogued || strings.TrimSpace(stringValue(disposition["reason"])) == "" {
+				return fmt.Errorf("non-catalog disposition %q must describe an actual external installation", slug)
+			}
+		default:
+			return fmt.Errorf("installation %q has an unsupported disposition", slug)
+		}
+	}
+	if len(qualifiedCatalog) != len(desiredIntegrations) {
+		return errors.New("attestation omits one or more catalog integrations")
+	}
+	return nil
+}
+
+func canonicalInstallationInventoryQualification(qualification map[string]any) ([]byte, error) {
+	normalized := make(map[string]any, len(qualification)-1)
+	for key, value := range qualification {
+		if key != "evidence_digest" {
+			normalized[key] = value
+		}
+	}
+	installations := append([]map[string]any(nil), objectList(qualification["installations"])...)
+	sort.Slice(installations, func(left, right int) bool {
+		return strings.ToLower(stringValue(installations[left]["app_slug"])) < strings.ToLower(stringValue(installations[right]["app_slug"]))
+	})
+	normalized["installations"] = mapsToAny(installations)
+	return rendering.CanonicalJSON(normalized)
 }
 
 var integrationSourceSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)

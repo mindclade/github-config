@@ -19,6 +19,7 @@ output "managed_resource_ids" {
     repositories           = { for key, repository in github_repository.this : key => repository.id }
     custom_properties      = { for key, property in github_repository_custom_property.this : key => property.id }
     dependabot             = { for key, setting in github_repository_dependabot_security_updates.this : key => setting.id }
+    actions_access_levels  = { for key, access in github_actions_repository_access_level.this : key => access.id }
     oidc_subject_templates = { for key, template in github_actions_repository_oidc_subject_claim_customization_template.this : key => template.id }
   }
 }
@@ -32,6 +33,13 @@ output "deployment_preflight" {
         for key, repository in var.repositories : key => repository.direct_collaborators
       }
       reason = "the provider manages declared collaborator resources but cannot make an empty catalog authoritative; connected observation must reject undeclared direct access"
+    }
+    actions_access_levels = {
+      managed = true
+      desired = {
+        for key, repository in var.repositories : key => repository.actions_access_level
+      }
+      reason = "provider 6.13.0 manages each repository's reusable workflow and action sharing boundary"
     }
     oidc_repository_templates = {
       managed = true

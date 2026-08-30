@@ -231,9 +231,12 @@ func runEvidence(root string, arguments []string, stdout, stderr io.Writer) int 
 	output := flags.String("output", "", "evidence output path")
 	phase := flags.String("phase", "enforce", "rollout phase: adopt, foundation, or enforce")
 	riskAcknowledged := flags.Bool("risk-acknowledged", false, "attest protected review of privilege-expanding changes")
+	destructiveAcknowledged := flags.Bool("destructive-change-acknowledged", false, "attest explicit protected review of every removal in the exact plan")
+	dependencyAnalysis := flags.String("dependency-analysis", "", "plan-bound dependency-analysis JSON for destructive changes")
 	organization := flags.String("organization", "", "expected organization login binding")
 	changeReference := flags.String("change-reference", "", "reviewed change-reference binding")
 	workflowRef := flags.String("workflow-ref", os.Getenv("GITHUB_WORKFLOW_REF"), "immutable workflow-ref binding")
+	oidcIssuer := flags.String("oidc-issuer", "", "OIDC issuer binding for protected evidence")
 	sourceSHA := flags.String("source-sha", os.Getenv("GITHUB_SHA"), "checked-out catalog/compiler source SHA binding")
 	workflowSHA := flags.String("workflow-sha", os.Getenv("GITHUB_WORKFLOW_SHA"), "workflow-file source SHA binding")
 	actorID := flags.String("actor-id", os.Getenv("GITHUB_ACTOR_ID"), "initiating GitHub actor ID binding")
@@ -247,6 +250,7 @@ func runEvidence(root string, arguments []string, stdout, stderr io.Writer) int 
 	wifQualificationEvidenceDigest := flags.String("wif-qualification-evidence-digest", "", "bootstrap WIF qualification sha256-prefixed digest binding")
 	stateBackendDigest := flags.String("state-backend-digest", "", "reviewed state-backend contract sha256-prefixed digest binding")
 	executorContractDigest := flags.String("executor-contract-digest", "", "reviewed plan/apply executor contract sha256-prefixed digest binding")
+	reviewContextDigest := flags.String("review-context-digest", "", "API-resolved review and approver-separation sha256-prefixed digest binding")
 	reviewedPlanDigest := flags.String("reviewed-plan-digest", "", "reviewed applied-plan SHA-256 binding without prefix")
 	postApplyDriftDigest := flags.String("post-apply-drift-digest", "", "post-apply drift report SHA-256 binding without prefix")
 	postApplyDriftExitCode := flags.String("post-apply-drift-exit-code", "", "post-apply drift exit-code binding: 0 or 2")
@@ -287,24 +291,30 @@ func runEvidence(root string, arguments []string, stdout, stderr io.Writer) int 
 		}
 		expectedCatalogDigest = rendering.Digest(canonicalCatalog)
 	}
-	receipt, err := evidence.Build(*plan, *planFile, *catalogPath, *observedPath, *phase, *riskAcknowledged, policyInput, expectedCatalogDigest, map[string]string{
-		"organization": *organization, "change_reference": *changeReference,
-		"workflow_ref": *workflowRef, "source_sha": *sourceSHA, "workflow_sha": *workflowSHA, "actor_id": *actorID,
-		"plan_app_id": *planAppID, "apply_app_id": *applyAppID,
-		"run_id": *runID, "run_attempt": *runAttempt,
-		"created_epoch": *createdEpoch, "expires_epoch": *expiresEpoch,
-		"reviewed_evidence_digest":          *reviewedEvidenceDigest,
-		"wif_qualification_evidence_digest": *wifQualificationEvidenceDigest,
-		"state_backend_digest":              *stateBackendDigest,
-		"executor_contract_digest":          *executorContractDigest,
-		"reviewed_plan_digest":              *reviewedPlanDigest,
-		"post_apply_drift_digest":           *postApplyDriftDigest,
-		"post_apply_drift_exit_code":        *postApplyDriftExitCode,
-		"attempt_status":                    *attemptStatus,
-		"apply_started":                     *applyStarted,
-		"failure_stage":                     *failureStage,
-		"apply_exit_code":                   *applyExitCode,
-	})
+	receipt, err := evidence.Build(
+		*plan, *planFile, *catalogPath, *observedPath, *phase,
+		*riskAcknowledged, *destructiveAcknowledged, *dependencyAnalysis,
+		policyInput, expectedCatalogDigest, map[string]string{
+			"organization": *organization, "change_reference": *changeReference,
+			"workflow_ref": *workflowRef, "oidc_issuer": *oidcIssuer,
+			"source_sha": *sourceSHA, "workflow_sha": *workflowSHA, "actor_id": *actorID,
+			"plan_app_id": *planAppID, "apply_app_id": *applyAppID,
+			"run_id": *runID, "run_attempt": *runAttempt,
+			"created_epoch": *createdEpoch, "expires_epoch": *expiresEpoch,
+			"reviewed_evidence_digest":          *reviewedEvidenceDigest,
+			"wif_qualification_evidence_digest": *wifQualificationEvidenceDigest,
+			"state_backend_digest":              *stateBackendDigest,
+			"executor_contract_digest":          *executorContractDigest,
+			"review_context_digest":             *reviewContextDigest,
+			"reviewed_plan_digest":              *reviewedPlanDigest,
+			"post_apply_drift_digest":           *postApplyDriftDigest,
+			"post_apply_drift_exit_code":        *postApplyDriftExitCode,
+			"attempt_status":                    *attemptStatus,
+			"apply_started":                     *applyStarted,
+			"failure_stage":                     *failureStage,
+			"apply_exit_code":                   *applyExitCode,
+		},
+	)
 	if err != nil {
 		return reportError(stderr, err)
 	}
@@ -317,13 +327,51 @@ func runEvidence(root string, arguments []string, stdout, stderr io.Writer) int 
 func runVerifyEvidence(arguments []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("verify-evidence", stderr)
 	input := flags.String("input", "", "PlanEvidence JSON path")
+	signature := flags.String("signature", "", "detached GCP KMS signature path")
+	publicKey := flags.String("public-key", "", "offline PKIX public-key PEM path")
+	publicKeyDigest := flags.String("public-key-digest", "", "bootstrap-qualified public-key SHA-256 digest")
+	kmsKeyVersion := flags.String("kms-key-version", "", "exact GCP KMS cryptoKeyVersion resource")
+	signatureAlgorithm := flags.String("signature-algorithm", "", "exact GCP KMS signature algorithm")
+	atEpoch := flags.Int64("at-epoch", 0, "verification epoch for the evidence execution window")
+	requireEligible := flags.Bool("require-eligible", false, "require protected-apply eligibility")
+	expectedChangeReference := flags.String("expected-change-reference", "", "required canonical change-reference binding")
+	expectedReviewContextDigest := flags.String("expected-review-context-digest", "", "required API-resolved review-context digest")
+	expectedSourceSHA := flags.String("expected-source-sha", "", "required source revision binding")
+	expectedWorkflowRef := flags.String("expected-workflow-ref", "", "required workflow-ref binding")
+	expectedWorkflowSHA := flags.String("expected-workflow-sha", "", "required workflow revision binding")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return 1
 	}
 	if *input == "" {
 		return reportError(stderr, errors.New("verify-evidence requires --input"))
 	}
-	verification, err := evidence.Verify(*input)
+	authenticationRequested := *signature != "" || *publicKey != "" || *publicKeyDigest != "" ||
+		*kmsKeyVersion != "" || *signatureAlgorithm != "" || *atEpoch != 0 || *requireEligible ||
+		*expectedChangeReference != "" || *expectedReviewContextDigest != "" || *expectedSourceSHA != "" ||
+		*expectedWorkflowRef != "" || *expectedWorkflowSHA != ""
+	var verification map[string]any
+	var err error
+	if authenticationRequested {
+		if *signature == "" || *publicKey == "" || *publicKeyDigest == "" || *kmsKeyVersion == "" ||
+			*signatureAlgorithm == "" || *atEpoch <= 0 || *expectedChangeReference == "" ||
+			*expectedReviewContextDigest == "" || *expectedSourceSHA == "" || *expectedWorkflowRef == "" ||
+			*expectedWorkflowSHA == "" {
+			return reportError(stderr, errors.New("authenticated evidence verification requires the complete signature, KMS, time, source, workflow, change, and review binding set"))
+		}
+		verification, err = evidence.VerifyAuthenticated(*input, evidence.AuthenticationOptions{
+			SignaturePath: *signature, PublicKeyPath: *publicKey, PublicKeyDigest: *publicKeyDigest,
+			KMSKeyVersion: *kmsKeyVersion, SignatureAlgorithm: *signatureAlgorithm,
+			AtEpoch: *atEpoch, RequireEligible: *requireEligible,
+			ExpectedBindings: map[string]string{
+				"change_reference":      *expectedChangeReference,
+				"review_context_digest": *expectedReviewContextDigest,
+				"source_sha":            *expectedSourceSHA, "workflow_ref": *expectedWorkflowRef,
+				"workflow_sha": *expectedWorkflowSHA,
+			},
+		})
+	} else {
+		verification, err = evidence.Verify(*input)
+	}
 	if err != nil {
 		return reportError(stderr, err)
 	}

@@ -1,5 +1,10 @@
 # Mindclade GitHub configuration
 
+Owner: @mindclade/developer-platform
+Security reviewer: @mindclade/security
+Last reviewed: 2026-08-30
+Review cadence: 90 days
+
 This repository is the declarative control plane for the `mindclade` GitHub
 organization. Human-authored policy lives in `config/`, is validated against
 versioned schemas, compiled deterministically, evaluated by Rego, and rendered
@@ -9,7 +14,7 @@ The source is designed to fail closed. Passing local checks proves source
 integrity; it does **not** prove that GitHub, the state backend, workload
 identity, Apps, or protected reviewers are correctly deployed.
 
-Current qualification status is `PASS_WITH_DEPLOYMENT_PREFLIGHT`: the strict
+Current qualification status is `SOURCE_READY`: the strict
 source tree is implemented, while connected enforcement remains deliberately
 blocked by the activation records in `config/` and explicitly unmanaged
 provider/external controls. Clearing repository variables is not activation;
@@ -47,6 +52,38 @@ Every configuration document uses `github.mindclade.io/v1`, rejects unknown
 fields, and refers to other objects by stable logical ID. Generated catalog,
 observation, plan, state, and evidence files are ephemeral and must not be
 committed.
+
+Every repository declares an Actions content access level. The organization
+`.github` repository alone uses `organization`; all other repositories use
+`none`. The provider resource, import binding, read-only REST observation,
+drift projection, and plan evidence all enforce that boundary. This setting
+shares reusable workflow implementations without making any repository public.
+The visible `developer-platform` and `security` teams retain `maintain` and
+`push` access respectively so both `.github/CODEOWNERS` entries can resolve
+once connected team membership is qualified.
+
+Custom-property enum changes use two source-reviewed phases. `preserve` unions
+explicit legacy values with desired definitions before repository assignments
+are reconciled. Enforcement stays blocked in that phase. Only after a complete
+observation proves the assignments converged may a later change select
+`retire`, remove the legacy-value map, and contract the definitions. No
+workflow performs an ad-hoc REST write or infers retirement from source alone.
+
+Infrastructure source review is enforced by the canonical no-bypass
+`infrastructure-source` ruleset, two distinct approvals, required CODEOWNER
+review, signed commits, merge queue, and the exact `Pull request / required`
+workflow provenance. Protected mutations use the canonical
+`infrastructure-apply` environment, which prevents self-review and
+administrator bypass.
+
+The disaster-recovery workflow's optional connected archive verifier reuses
+that canonical `infrastructure-apply` environment. Its checked-in activation
+is blocked, so github-config provisions no verifier handoff variables. Only a
+reviewed ready transition may materialize the exact non-secret provider,
+verifier service-account, and archive-bucket variables; the compiler schema,
+OpenTofu module, and plan-evidence catalog binding reject partial or
+substituted values. Exact workflow/ref claims and the read-only verifier
+service account keep verification authority separate from apply authority.
 
 ## Compiler interface
 
@@ -112,8 +149,13 @@ protected evidence records the resolved execution identities.
 
 There is no supported local apply command. All organization mutation is
 manual-dispatch only through `Protected apply`, bound to a full `main` commit
-SHA and an approved change reference. The workflow has three controlled
-phases:
+SHA and the canonical URL of the merged pull request whose merge commit equals
+that SHA. The source gate resolves the pull request and all reviews through the
+GitHub API, requires two qualified approving actors including a
+CODEOWNER-equivalent actor, rejects a current change request, and requires the
+reviewer roster to be disjoint from the protected-environment approver roster
+before either plan or apply can exchange cloud identity. The workflow has three
+controlled phases:
 
 1. `adopt` permits imports and no create/update/delete action.
    Import targets and IDs must come from a complete live observation; the
@@ -125,17 +167,20 @@ phases:
    the closed-world App inventory are qualified. Unlike `enforce`, it may
    tolerate known missing managed objects, but it cannot bypass an authority
    or activation gate. It rejects replacement, state-forget, protection
-   weakening, and every deletion except a delete-only revocation of an
+   weakening, and repository deletion. Delete-only revocation of an
    organization membership, team membership, team repository grant, or
-   direct repository collaborator. Those four offboarding operations are
-   eligible only after a fresh connected preflight proves the desired state
-   retains administrator and reviewer quorum; a simultaneous access grant or
-   disguised replacement remains denied. Catalog-authorized privilege
+   direct repository collaborator remains narrowly governed. The catalog may
+   also retire an environment, environment deployment policy, organization
+   ruleset, or team only when the exact plan is explicitly acknowledged and
+   accompanied by complete plan-bound dependency analysis. Offboarding still
+   requires fresh connected quorum proof; a simultaneous access grant,
+   disguised replacement, unknown address, or repository removal remains
+   denied. Catalog-authorized privilege
    expansion additionally requires the dispatcher to set
    `acknowledge_privilege_expansion=true`; this attestation is evidence-bound
    and does not override fundamentally prohibited change classes.
-3. `enforce` activates qualified protections and also rejects deletion and
-   replacement, with the same narrowly constrained offboarding exception.
+3. `enforce` activates qualified protections and applies the same exact
+   deletion, retirement, acknowledgement, and dependency-analysis rules.
 
 An unprivileged source job requires `GHCFG_FOUNDATION_READY=true` for adoption
 or foundation work and `GHCFG_ACTIVATION_READY=true` for enforcement. The two
@@ -158,6 +203,17 @@ and executor-contract gate for that job succeeded; an earlier gate failure
 remains in GitHub's native run log (and the separate no-OIDC drift reporting
 job) rather than bypassing the failed boundary to upload a diagnostic.
 
+Plan evidence is signed with the exact bootstrap-owned asymmetric KMS key
+version after its self-digest and eligibility are verified. Apply reconstructs
+the qualified public key from canonical base64, checks its SHA-256 digest, and
+verifies ECDSA P-256 over the exact evidence bytes offline. Verification binds
+the GitHub OIDC issuer, workflow ref and workflow SHA, source revision, merged
+pull-request reference, its final reviewed head SHA and exact merge SHA,
+API-resolved review-context digest, eligibility, and execution window. It runs
+before apply can exchange an OIDC token and repeats
+immediately before the evidence is consumed. Missing, malformed, expired, or
+mismatched signing material fails closed.
+
 Required non-secret variables are:
 
 - `GHCFG_FOUNDATION_READY`, `GHCFG_ACTIVATION_READY`, and
@@ -169,6 +225,19 @@ Required non-secret variables are:
 - `GHCFG_STATE_BUCKET`, `GHCFG_STATE_PREFIX`, and the bootstrap-reviewed
   `GHCFG_STATE_BACKEND_EVIDENCE_DIGEST`;
 - bootstrap-reviewed `GHCFG_EXECUTOR_CONTRACT_EVIDENCE_DIGEST`;
+- `GHCFG_CHANGE_REVIEWER_ACTOR_IDS`, `GHCFG_CODEOWNER_REVIEWER_ACTOR_IDS`,
+  `GHCFG_ENVIRONMENT_APPROVER_ACTOR_IDS`, and bootstrap-reviewed
+  `GHCFG_REVIEW_ROSTER_QUALIFICATION_DIGEST`; reviewer and environment-approver
+  actor sets must be canonical, qualified, and disjoint;
+- `GHCFG_PLAN_EVIDENCE_KMS_KEY_VERSION` (an exact
+  `bootstrap-signing/github-config-plan-evidence` cryptoKeyVersion),
+  `GHCFG_PLAN_EVIDENCE_KMS_ALGORITHM=EC_SIGN_P256_SHA256`,
+  `GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_PEM_B64`, and
+  `GHCFG_PLAN_EVIDENCE_PUBLIC_KEY_DIGEST`;
+- `GHCFG_PLAN_EVIDENCE_KEY_QUALIFIED_SOURCE_SHA`,
+  `GHCFG_PLAN_EVIDENCE_KEY_QUALIFICATION_EVIDENCE_DIGEST`, and
+  `GHCFG_PLAN_EVIDENCE_KEY_QUALIFICATION_EXPIRES_EPOCH` from bootstrap's
+  maximum-seven-day signing-key qualification;
 - `GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN` and
   `GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN`;
 - `GCP_WIF_PROVIDER_GITHUB_CONFIG_APPLY` and
@@ -237,14 +306,17 @@ workflows do not accept an arbitrary ID overlay.
 Closed-world GitHub App inventory is a separate bootstrap qualification. The
 organization installation endpoint can inventory App and installation
 identity but cannot prove selected-repository scope. Foundation and
-enforcement therefore remain blocked until a canonical, time-limited
-bootstrap attestation covers every product and governance App, immutable
-repository IDs, exact scope, and the explicit disposition of every additional
-installation. Embedded per-integration attestations are validated catalog
-inputs, not independently authenticated authority: the unconditional
-`INSTALLATION_INVENTORY_UNQUALIFIED` blocker must remain until that external
-bundle binds the current workflow/source SHA, catalog digest, every embedded
-attestation digest, and every installation disposition.
+enforcement therefore require a canonical bootstrap attestation with a maximum
+seven-day lifetime. The attestation binds its exact protected-workflow source
+SHA, covers the authoritative paginated installation count, and dispositions
+every live App/installation ID exactly once as catalogued, approved external,
+or pending retirement. Each catalog disposition binds the independently
+validated per-integration attestation digest; that attestation in turn binds
+immutable repository IDs and exact selected scope. The closed-world document
+is self-digested after deterministic installation ordering. Any missing,
+duplicate, stale, mismatched, or unobserved entry produces
+`INSTALLATION_INVENTORY_UNQUALIFIED`. The checked-in organization state remains
+`blocked` until bootstrap issues this short-lived connected evidence.
 
 ## Activation status
 
@@ -258,11 +330,29 @@ blocked until all of the following are true:
   teams (two accounts belonging to one person count once);
 - the reusable checks in `.github` exist at immutable SHAs and handle both
   pull requests and merge groups;
+- the `.github` authority inventory independently binds the reviewed catalog
+  revision that publishes workflow templates and its earlier immutable
+  reusable-workflow implementation revision. Connected validation requires
+  the implementation commit to be catalog ancestry, parses every canonical
+  template, and independently parses the reusable-workflow tree detached at
+  that exact implementation revision;
+- the `gitops` authority remains fail-closed until its canonical workflows use
+  the same reviewed external-action pins as this control-plane catalog; its
+  stale checkout pin is recorded as
+  `gitops-authority-action-pin-parity-pending`, with no claimed revision;
 - required checks are bound to qualified issuer App IDs and an immutable
   required-workflow source repository/ref (a matching context string alone is
   insufficient);
 - bootstrap has qualified the GCS backend, KMS policy, WIF identities, and App
   key custody;
+- bootstrap has provisioned and qualified the exact plan-evidence asymmetric
+  signing key/version, algorithm, offline public key, and source-bound expiry;
+- bootstrap has connected-qualified the one active `infrastructure-export`
+  `EC_SIGN_P256_SHA256` key version. A ready `infrastructure-apply`
+  environment must carry identical development/staging/production/restricted
+  key-version, canonical base64 PKIX P-256 public-key PEM, and SPKI-DER SHA-256
+  digest tuples; blocked source carries none of these non-secret handoff
+  values;
 - bootstrap has recorded the live organization/repository numeric IDs and
   rejects legacy name-only or transferred/recreated OIDC subjects;
 - the governance plan/apply Apps have passed positive and negative permission
@@ -278,6 +368,53 @@ policy, independent-human approval composition, environment workflow
 provenance, and external OIDC/App authority. Consequently, the current
 `enforce` graph is a fail-closed activation stub; connected observations alone
 cannot turn those flags into managed controls.
+
+The OIDC catalog contains 16 closed identities, and bootstrap source declares
+an exact provider/service-account surface for all 16. Eleven are in
+bootstrap's active-subject source set: three bootstrap plan/apply/recovery
+identities and eight environment/role-specific `infrastructure-live`
+identities. The three `github-config` identities,
+`infrastructure-drift-plan`, and the CI-evidence verifier remain
+activation-disabled and gated pending connected negative/positive exchange
+qualification. Each gated identity has an exact checked-in
+`not-connected-qualified` blocker. The CI-evidence verifier uses the typed
+`canonical-provider-resource` audience because bootstrap intentionally omits
+`allowed_audiences`; only the connected bootstrap output can supply the exact
+numeric-project provider-resource audience. Policy accepts that marker only
+for this disabled verifier and only when the attested token audience exactly
+matches the canonical `github-ci-evidence/providers/verifier` resource form.
+The contract suite compares provider,
+account, workflow/context, environment, audience, and active/gated state with
+the sibling bootstrap manifest whenever that canonical repository is present.
+
+### Blueprint interface qualification gap
+
+Connected production qualification is deliberately **nonqualifying** under
+Blueprint v3.4.0 as written. The common estate rule says repository-local
+workflows are thin callers of organization `.github` reusable workflows, but
+the exact A3.9 tree exposes only reusable metadata, documentation, security,
+scorecard, Buildkite-dispatch, and required-check interfaces. It exposes no
+reusable GitHub-governance plan, drift, or protected-apply interface, while the
+exact A3.10 tree requires those three repo-local workflows and forbids adding
+another path.
+
+The preferred blueprint amendment adds
+`reusable-governance-pull-request.yml`,
+`reusable-governance-drift-detection.yml`, and
+`reusable-governance-protected-apply.yml` to the A3.9 canonical workflow tree,
+plus their interface-policy fixtures/tests, and defines A3.10's three files as
+thin pinned callers. Alternatively, A3.10 must explicitly exempt these
+privileged control-plane composition roots from the common thin-caller rule
+while retaining the existing pin, identity, and evidence requirements. Until
+one amendment is ratified and both repositories implement it, no readiness
+variable or live observation can make this repository production authority.
+
+Cross-run observation checkpoints are not accepted as authority: GitHub
+exposes no organization-wide consistent-read snapshot, so resuming a partially
+cached graph could combine incompatible points in time. Reads instead use
+bounded exponential backoff with jitter and `Retry-After`; a failed or partial
+observation is recorded non-authoritatively and the next run starts a fresh
+full observation before re-planning.
 
 The artifact-signing App is selected-repository only. It needs `contents:write`
 to create release refs, but it receives no ruleset-wide bypass: one tag ruleset

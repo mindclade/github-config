@@ -34,6 +34,11 @@ output "deployment_preflight" {
         desired             = environment.deployment_branch_policy
         reason              = "exact catalog branch and tag patterns are managed as repository environment deployment-policy resources"
       }
+      variables = {
+        managed = true
+        desired = sort(keys(environment.variables))
+        reason  = "non-secret connected handoff values are materialized only for a source-qualified ready environment"
+      }
     }
   }
 }
@@ -43,5 +48,8 @@ output "managed_resource_ids" {
   value = {
     environments        = { for key, environment in github_repository_environment.this : key => environment.id }
     deployment_policies = { for key, policy in github_repository_environment_deployment_policy.this : key => policy.id }
+    environment_variables = {
+      for key, variable in github_actions_environment_variable.this : key => variable.id
+    }
   }
 }

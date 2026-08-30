@@ -5,15 +5,19 @@ metadata:
   description: Declarative GitHub organization and repository governance control plane.
   annotations:
     github.com/project-slug: mindclade/github-config
-    mindclade.io/qualification-status: PASS_WITH_DEPLOYMENT_PREFLIGHT
+    mindclade.io/qualification-status: SOURCE_READY
 spec:
   type: governance-control-plane
-  lifecycle: production
-  maturity: production
-  owner: security
+  lifecycle: pre-production
+  maturity: pre-production
+  owner: developer-platform
+  security_reviewers:
+    - security
   repository_class: governance-source
+  trust_tier: privileged-governance
+  recovery_tier: tier-0
   data_classification: restricted
-  production_authority: true
+  production_authority: false
   dependencies:
     - component:dot-github
     - component:bootstrap
@@ -24,3 +28,8 @@ spec:
     strategy: reviewed-main
     artifact: source-commit
     immutable: true
+  activation:
+    source_ready:
+      description: Catalog, compiler, policy, tests, and recovery source are qualified without implying live GitHub enforcement.
+    connected:
+      description: Nonqualifying until bootstrap connects and independently qualifies every source-declared identity and the plan-evidence signer, and Blueprint A3.9/A3.10 ratifies a reusable governance workflow interface or explicit control-plane exception; production authority then requires an independently approved apply and fresh verification at this exact revision.

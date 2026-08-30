@@ -37,7 +37,26 @@ locals {
           branch_policy     = environment.deployment_branch_policy
           approval_policy   = environment.approval_policy
           allowed_workflows = environment.allowed_workflows
+          variables         = environment.variables
+          activation        = try(environment.activation, null)
         }
+      }
+    ]...
+  )
+
+  environment_variables = merge(
+    {},
+    [
+      for assignment_key, assignment in local.assignments : {
+        for variable_name, value in assignment.variables :
+        "${assignment_key}:${variable_name}" => {
+          repository     = assignment.repository_name
+          environment    = assignment.environment_name
+          variable_name  = variable_name
+          value          = value
+          assignment_key = assignment_key
+        }
+        if try(assignment.activation.state, "blocked") == "ready"
       }
     ]...
   )
@@ -125,4 +144,15 @@ resource "github_repository_environment_deployment_policy" "this" {
   lifecycle {
     prevent_destroy = true
   }
+}
+
+resource "github_actions_environment_variable" "this" {
+  for_each = local.environment_variables
+
+  repository    = each.value.repository
+  environment   = each.value.environment
+  variable_name = each.value.variable_name
+  value         = each.value.value
+
+  depends_on = [github_repository_environment.this]
 }

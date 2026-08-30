@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -26,6 +28,10 @@ const (
 	pageSize         = 100
 	maxChanges       = 10_000
 	githubAPIVersion = "2026-03-10"
+	maxReadAttempts  = 6
+	readRetryBase    = 1 * time.Second
+	readRetryMaximum = 30 * time.Second
+	readRetryBudget  = 90 * time.Second
 )
 
 var organizationPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
@@ -103,13 +109,15 @@ func Report(desired, observed map[string]any) map[string]any {
 func ManagedProjection(catalog map[string]any) map[string]any {
 	result := map[string]any{"projection_version": "github-rest/v1"}
 	organization, _ := catalog["organization"].(map[string]any)
-	result["organization"] = pick(organization, []string{
+	projectedOrganization := pick(organization, []string{
 		"organization_login", "default_repository_permission",
 		"members_can_create_repositories", "members_can_create_public_repositories",
 		"members_can_create_private_repositories", "members_can_create_internal_repositories",
 		"members_can_create_pages", "members_can_fork_private_repositories",
-		"web_commit_signoff_required", "two_factor_requirement", "custom_properties",
+		"web_commit_signoff_required", "two_factor_requirement",
 	})
+	projectedOrganization["custom_properties"] = projectDesiredCustomProperties(organization)
+	result["organization"] = projectedOrganization
 	actions, _ := catalog["actions_policy"].(map[string]any)
 	projectedActions := pick(actions, []string{
 		"mode", "github_owned_allowed", "verified_creator_allowed",
@@ -173,7 +181,7 @@ func ManagedProjection(catalog map[string]any) map[string]any {
 		}
 	}
 	result["repositories"] = projectCollection(catalog["repositories"], func(spec map[string]any) map[string]any {
-		projected := pick(spec, []string{"name", "description", "visibility", "archived", "features", "merge_policy", "custom_properties"})
+		projected := pick(spec, []string{"name", "description", "visibility", "actions_access_level", "archived", "features", "merge_policy", "custom_properties"})
 		projected["web_commit_signoff_required"] = organization["web_commit_signoff_required"]
 		security, _ := spec["security"].(map[string]any)
 		projected["security"] = pick(security, []string{
@@ -426,6 +434,13 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 				return http.ErrUseLastResponse
 			},
 		},
+		clock: realRetryClock{},
+	}
+	// Integration tests inject an advancing clock only for the already-bounded
+	// HTTP loopback test transport. The production GitHub endpoint always uses
+	// wall time and cancellable timers.
+	if loopbackHTTP && os.Getenv("MINDCLADE_GITHUB_RETRY_TEST_CLOCK") == "advancing" {
+		client.clock = &advancingRetryClock{current: time.Unix(1_700_000_000, 0).UTC()}
 	}
 	escapedOrg := url.PathEscape(organization)
 	organizationRaw, err := client.getObject(ctx, "/orgs/"+escapedOrg)
@@ -585,11 +600,14 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 	codeScanningDefaultSetup := make(map[string]any, len(repositoryNames))
 	privateVulnerabilityReporting := make(map[string]any, len(repositoryNames))
 	repositoryCustomProperties := make(map[string]any, len(repositoryNames))
+	repositoryActionsAccess := make(map[string]any, len(repositoryNames))
 	repositoryOIDCPolicies := make(map[string]any, len(repositoryNames))
 	liveRepositoryNames := make(map[string]struct{}, len(repositoriesRaw))
+	liveRepositories := make(map[string]map[string]any, len(repositoriesRaw))
 	for _, repository := range objectArrayFromList(repositoriesRaw) {
 		if name, _ := repository["name"].(string); name != "" {
 			liveRepositoryNames[name] = struct{}{}
+			liveRepositories[name] = repository
 		}
 	}
 	sort.Strings(repositoryNames)
@@ -598,6 +616,27 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 			continue
 		}
 		repositoryPath := "/repos/" + escapedOrg + "/" + url.PathEscape(repository)
+		liveRepository := liveRepositories[repository]
+		visibility := strings.ToLower(textValue(liveRepository["visibility"]))
+		isPublic := visibility == "public" || (visibility == "" && liveRepository["private"] == false)
+		if isPublic {
+			// GitHub exposes repository Actions sharing only after a repository is
+			// private/internal.  A public -> internal migration must first update
+			// visibility, then create the access-level resource in the same
+			// dependency graph; the inapplicable pre-migration endpoint is not a
+			// capability failure and is never imported as an observed setting.
+			repositoryActionsAccess[repository] = map[string]any{
+				"not_applicable": true, "observed_visibility": "public",
+			}
+		} else {
+			actionsAccess, actionsAccessErr := client.getObject(ctx, repositoryPath+"/actions/permissions/access")
+			if actionsAccessErr != nil {
+				recordCapabilityError("repository_actions_access:"+repository, actionsAccessErr)
+				repositoryActionsAccess[repository] = unknownValue()
+			} else {
+				repositoryActionsAccess[repository] = reduceObject(actionsAccess, []string{"access_level"})
+			}
+		}
 		repositoryOIDC, oidcErr := client.getObject(ctx, repositoryPath+"/actions/oidc/customization/sub")
 		if oidcErr != nil {
 			recordCapabilityError("repository_oidc_subject_customization:"+repository, oidcErr)
@@ -607,11 +646,17 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 				"use_default", "include_claim_keys", "use_immutable_subject",
 			})
 		}
-		value, err := client.getObject(ctx, repositoryPath+"/environments")
+		environmentValues, environmentTotal, err := client.getNestedListWithTotal(
+			ctx, repositoryPath+"/environments", "environments", "total_count",
+		)
 		if err != nil {
 			recordCapabilityError("repository_environments:"+repository, err)
 			environments[repository] = unknownValue()
 		} else {
+			value := map[string]any{
+				"total_count":  environmentTotal,
+				"environments": environmentValues,
+			}
 			for _, environment := range objectArray(value["environments"]) {
 				branchPolicy, _ := environment["deployment_branch_policy"].(map[string]any)
 				customPolicies, _ := branchPolicy["custom_branch_policies"].(bool)
@@ -620,10 +665,10 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 					continue
 				}
 				environmentName, _ := environment["name"].(string)
-				policies, policyErr := client.getNestedList(
+				policies, _, policyErr := client.getNestedListWithTotal(
 					ctx,
 					repositoryPath+"/environments/"+url.PathEscape(environmentName)+"/deployment-branch-policies",
-					"branch_policies",
+					"branch_policies", "total_count",
 				)
 				if policyErr != nil {
 					recordCapabilityError("environment_deployment_policies:"+repository+":"+environmentName, policyErr)
@@ -674,18 +719,28 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		} else {
 			codeScanningDefaultSetup[repository] = codeScanningEnabled
 		}
-		privateReportingEnabled, stateErr := client.checkEnabled(ctx, repositoryPath+"/private-vulnerability-reporting")
-		err = stateErr
-		if err != nil {
-			recordCapabilityError("private_vulnerability_reporting:"+repository, err)
-			privateVulnerabilityReporting[repository] = unknownValue()
+		if isPublic {
+			privateReportingEnabled, stateErr := client.checkEnabled(ctx, repositoryPath+"/private-vulnerability-reporting")
+			err = stateErr
+			if err != nil {
+				recordCapabilityError("private_vulnerability_reporting:"+repository, err)
+				privateVulnerabilityReporting[repository] = unknownValue()
+			} else {
+				privateVulnerabilityReporting[repository] = privateReportingEnabled
+			}
 		} else {
-			privateVulnerabilityReporting[repository] = privateReportingEnabled
+			// Private vulnerability reporting is a public-repository feature.
+			// Private/internal repositories use security advisories and therefore
+			// have a known not-applicable (false) projection for this endpoint.
+			privateVulnerabilityReporting[repository] = false
 		}
 	}
 	repositories := indexObjects(repositoriesRaw, "name", repositoryFields)
 	teams := indexObjects(teamsRaw, "slug", teamFields)
-	rulesets := indexObjects(rulesetsDetailed, "name", nil)
+	rulesets, rulesetIndexErr := indexUniqueObjects(rulesetsDetailed, "name", nil)
+	if rulesetIndexErr != nil {
+		return nil, fmt.Errorf("observe organization rulesets: %w", rulesetIndexErr)
+	}
 	integrations := make(map[string]any)
 	for _, installation := range objectArrayFromList(installationsList) {
 		appSlug, _ := installation["app_slug"].(string)
@@ -737,6 +792,7 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		"repository_team_grants":                 repositoryTeams,
 		"repository_direct_collaborators":        directCollaborators,
 		"repository_custom_properties":           repositoryCustomProperties,
+		"repository_actions_access_levels":       repositoryActionsAccess,
 		"repository_dependabot_security_updates": dependabotSecurityUpdates,
 		"capabilities": map[string]any{
 			"enterprise_cloud":                 strings.Contains(strings.ToLower(planName), "enterprise"),
@@ -761,11 +817,13 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 			codeScanningDefaultSetup:      codeScanningDefaultSetup,
 			privateVulnerabilityReporting: privateVulnerabilityReporting,
 			repositoryCustomProperties:    repositoryCustomProperties,
+			repositoryActionsAccess:       repositoryActionsAccess,
 			repositoryOIDCPolicies:        repositoryOIDCPolicies,
 		},
 	)
 	result["managed_projection"] = managedProjection
-	desiredProjectionJSON, desiredProjectionErr := rendering.CanonicalJSON(ManagedProjection(desired))
+	desiredManagedProjection := ManagedProjection(desired)
+	desiredProjectionJSON, desiredProjectionErr := rendering.CanonicalJSON(desiredManagedProjection)
 	observedProjectionJSON, observedProjectionErr := rendering.CanonicalJSON(managedProjection)
 	if desiredProjectionErr != nil || observedProjectionErr != nil {
 		return nil, errors.New("canonicalize managed observation")
@@ -783,6 +841,41 @@ type githubClient struct {
 	base  string
 	token string
 	http  *http.Client
+	clock retryClock
+}
+
+type retryClock interface {
+	now() time.Time
+	wait(context.Context, time.Duration) error
+}
+
+type realRetryClock struct{}
+
+func (realRetryClock) now() time.Time { return time.Now() }
+
+func (realRetryClock) wait(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+type advancingRetryClock struct{ current time.Time }
+
+func (clock *advancingRetryClock) now() time.Time { return clock.current }
+
+func (clock *advancingRetryClock) wait(ctx context.Context, delay time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		clock.current = clock.current.Add(delay)
+		return nil
+	}
 }
 
 type observationDetails struct {
@@ -804,6 +897,7 @@ type observationDetails struct {
 	codeScanningDefaultSetup      map[string]any
 	privateVulnerabilityReporting map[string]any
 	repositoryCustomProperties    map[string]any
+	repositoryActionsAccess       map[string]any
 	repositoryOIDCPolicies        map[string]any
 }
 
@@ -897,13 +991,9 @@ func (client *githubClient) getNestedListWithTotal(ctx context.Context, path, fi
 }
 
 func (client *githubClient) get(ctx context.Context, path string, destination any) error {
-	request, err := client.request(ctx, path)
+	response, err := client.doRead(ctx, path)
 	if err != nil {
 		return err
-	}
-	response, err := client.http.Do(request)
-	if err != nil {
-		return fmt.Errorf("GitHub API request failed: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -919,13 +1009,9 @@ func (client *githubClient) get(ctx context.Context, path string, destination an
 }
 
 func (client *githubClient) checkEnabled(ctx context.Context, path string) (bool, error) {
-	request, err := client.request(ctx, path)
+	response, err := client.doRead(ctx, path)
 	if err != nil {
 		return false, err
-	}
-	response, err := client.http.Do(request)
-	if err != nil {
-		return false, fmt.Errorf("GitHub API request failed: %w", err)
 	}
 	defer response.Body.Close()
 	switch response.StatusCode {
@@ -939,13 +1025,9 @@ func (client *githubClient) checkEnabled(ctx context.Context, path string) (bool
 }
 
 func (client *githubClient) objectState(ctx context.Context, path, field string, expected any) (bool, bool, error) {
-	request, err := client.request(ctx, path)
+	response, err := client.doRead(ctx, path)
 	if err != nil {
 		return false, false, err
-	}
-	response, err := client.http.Do(request)
-	if err != nil {
-		return false, false, fmt.Errorf("GitHub API request failed: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNotFound {
@@ -961,6 +1043,113 @@ func (client *githubClient) objectState(ctx context.Context, path, field string,
 		return false, false, fmt.Errorf("decode GitHub response: %w", err)
 	}
 	return fmt.Sprint(value[field]) == fmt.Sprint(expected), true, nil
+}
+
+func (client *githubClient) doRead(ctx context.Context, path string) (*http.Response, error) {
+	if client.clock == nil {
+		client.clock = realRetryClock{}
+	}
+	deadline := client.clock.now().Add(readRetryBudget)
+	var lastErr error
+	for attempt := 1; attempt <= maxReadAttempts; attempt++ {
+		request, err := client.request(ctx, path)
+		if err != nil {
+			return nil, err
+		}
+		response, requestErr := client.http.Do(request)
+		if requestErr == nil && !retryableReadResponse(response) {
+			return response, nil
+		}
+		if requestErr != nil {
+			lastErr = fmt.Errorf("GitHub API request failed: %w", requestErr)
+		} else {
+			lastErr = fmt.Errorf(
+				"GitHub API returned %s (request_id=%q)",
+				response.Status, response.Header.Get("X-GitHub-Request-Id"),
+			)
+		}
+		if attempt == maxReadAttempts || ctx.Err() != nil {
+			if response != nil {
+				return response, nil
+			}
+			return nil, lastErr
+		}
+
+		now := client.clock.now()
+		delay := retryDelay(path, attempt, response, now)
+		if now.Add(delay).After(deadline) {
+			if response != nil {
+				return response, nil
+			}
+			return nil, fmt.Errorf("%w (bounded read retry budget exhausted)", lastErr)
+		}
+		if response != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
+			_ = response.Body.Close()
+		}
+		if err := client.clock.wait(ctx, delay); err != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+func retryableReadResponse(response *http.Response) bool {
+	if response == nil {
+		return true
+	}
+	switch response.StatusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests,
+		http.StatusInternalServerError, http.StatusBadGateway,
+		http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	case http.StatusForbidden:
+		return response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != ""
+	default:
+		return false
+	}
+}
+
+func retryDelay(path string, attempt int, response *http.Response, now time.Time) time.Duration {
+	backoff := readRetryBase << (attempt - 1)
+	if backoff > readRetryMaximum {
+		backoff = readRetryMaximum
+	}
+	hasher := fnv.New64a()
+	_, _ = hasher.Write([]byte(path + ":" + strconv.Itoa(attempt)))
+	jitterWindow := backoff / 2
+	jitter := time.Duration(hasher.Sum64() % uint64(jitterWindow+1))
+	delay := backoff + jitter
+	if response != nil {
+		if instructed, ok := retryAfterDelay(response.Header, now); ok && instructed > delay {
+			delay = instructed
+		}
+	}
+	return delay
+}
+
+func retryAfterDelay(header http.Header, now time.Time) (time.Duration, bool) {
+	if value := strings.TrimSpace(header.Get("Retry-After")); value != "" {
+		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds >= 0 {
+			return time.Duration(seconds) * time.Second, true
+		}
+		if deadline, err := http.ParseTime(value); err == nil {
+			if deadline.Before(now) {
+				return 0, true
+			}
+			return deadline.Sub(now), true
+		}
+	}
+	if header.Get("X-RateLimit-Remaining") == "0" {
+		if epoch, err := strconv.ParseInt(strings.TrimSpace(header.Get("X-RateLimit-Reset")), 10, 64); err == nil && epoch > 0 {
+			deadline := time.Unix(epoch, 0)
+			if deadline.Before(now) {
+				return 0, true
+			}
+			return deadline.Sub(now), true
+		}
+	}
+	return 0, false
 }
 
 func (client *githubClient) request(ctx context.Context, path string) (*http.Request, error) {
@@ -1040,6 +1229,25 @@ func indexObjects(values []any, key string, fields []string) map[string]any {
 		}
 	}
 	return result
+}
+
+func indexUniqueObjects(values []any, key string, fields []string) (map[string]any, error) {
+	result := make(map[string]any, len(values))
+	for _, value := range values {
+		object, ok := value.(map[string]any)
+		if !ok {
+			return nil, errors.New("response contained a malformed object")
+		}
+		identifier, ok := object[key].(string)
+		if !ok || identifier == "" {
+			return nil, fmt.Errorf("response omitted non-empty string field %q", key)
+		}
+		if _, duplicate := result[identifier]; duplicate {
+			return nil, fmt.Errorf("response contained duplicate %q values", key)
+		}
+		result[identifier] = reduceObject(object, fields)
+	}
+	return result, nil
 }
 
 func objectArray(value any) []map[string]any {
@@ -1536,6 +1744,29 @@ func projectObservedCustomProperties(values []any) []any {
 	return normalize(result).([]any)
 }
 
+func projectDesiredCustomProperties(organization map[string]any) []any {
+	migration, _ := organization["custom_property_migration"].(map[string]any)
+	legacy, _ := migration["legacy_allowed_values"].(map[string]any)
+	preserve := textValue(migration["phase"]) == "preserve"
+	result := make([]any, 0)
+	for _, property := range objectArray(organization["custom_properties"]) {
+		projected := pick(property, []string{"name", "value_type", "required", "allowed_values", "values_editable_by"})
+		if preserve {
+			values := append(stringValues(property["allowed_values"]), stringValues(legacy[textValue(property["name"])])...)
+			sort.Strings(values)
+			unique := values[:0]
+			for _, value := range values {
+				if len(unique) == 0 || unique[len(unique)-1] != value {
+					unique = append(unique, value)
+				}
+			}
+			projected["allowed_values"] = stringsAsAny(unique)
+		}
+		result = append(result, projected)
+	}
+	return normalize(result).([]any)
+}
+
 func projectObservedTeam(team map[string]any, members []any) map[string]any {
 	entry := pick(team, []string{"name", "description", "privacy"})
 	if parent, exists := team["parent"]; exists {
@@ -1584,6 +1815,11 @@ func projectObservedRepository(
 		return entry
 	}
 	entry["custom_properties"] = projectObservedRepositoryProperties(details.repositoryCustomProperties[name])
+	if access, ok := details.repositoryActionsAccess[name].(map[string]any); ok && !isUnknown(access) {
+		setObserved(entry, "actions_access_level", access, "access_level")
+	} else {
+		entry["actions_access_level"] = unknownValue()
+	}
 	securityRaw, _ := repository["security_and_analysis"].(map[string]any)
 	entry["security"] = map[string]any{
 		"vulnerability_alerts":            details.vulnerabilityAlerts[name],
@@ -1940,10 +2176,57 @@ func environmentReviewers(environment map[string]any) []any {
 
 func projectObservedEnvironmentSettings(environment map[string]any) map[string]any {
 	result := make(map[string]any)
-	setObserved(result, "deployment_branch_policy", environment, "deployment_branch_policy")
+	result["deployment_branch_policy"] = projectObservedEnvironmentDeploymentPolicy(environment)
 	result["prevent_self_review"] = environmentPreventSelfReview(environment)
 	setObserved(result, "can_admins_bypass", environment, "can_admins_bypass")
 	result["required_reviewers"] = environmentReviewers(environment)
+	return result
+}
+
+func projectObservedEnvironmentDeploymentPolicy(environment map[string]any) any {
+	policy, ok := environment["deployment_branch_policy"].(map[string]any)
+	if !ok {
+		return unknownValue()
+	}
+	protectedBranches, protectedKnown := policy["protected_branches"].(bool)
+	customPolicies, customKnown := policy["custom_branch_policies"].(bool)
+	if !protectedKnown || !customKnown {
+		return unknownValue()
+	}
+	result := map[string]any{
+		"protected_branches": protectedBranches, "custom_branch_policies": customPolicies,
+		"branch_patterns": []any{}, "tag_patterns": []any{},
+	}
+	if !customPolicies {
+		return result
+	}
+	if isUnknown(environment["deployment_branch_policies"]) {
+		return unknownValue()
+	}
+	policies, ok := environment["deployment_branch_policies"].([]any)
+	if !ok {
+		return unknownValue()
+	}
+	branchPatterns := make([]any, 0)
+	tagPatterns := make([]any, 0)
+	for _, rawPolicy := range policies {
+		deploymentPolicy, _ := rawPolicy.(map[string]any)
+		policyType, _ := deploymentPolicy["type"].(string)
+		pattern, _ := deploymentPolicy["name"].(string)
+		if pattern == "" {
+			pattern, _ = deploymentPolicy["pattern"].(string)
+		}
+		if pattern == "" || (policyType != "branch" && policyType != "tag") {
+			return unknownValue()
+		}
+		if policyType == "branch" {
+			branchPatterns = append(branchPatterns, pattern)
+		} else {
+			tagPatterns = append(tagPatterns, pattern)
+		}
+	}
+	result["branch_patterns"] = normalize(branchPatterns)
+	result["tag_patterns"] = normalize(tagPatterns)
 	return result
 }
 
@@ -2039,7 +2322,19 @@ func projectDesiredRuleset(spec map[string]any) map[string]any {
 
 func projectDesiredEnvironment(spec map[string]any) map[string]any {
 	result := pick(spec, []string{"name", "repositories"})
-	settings := pick(spec, []string{"prevent_self_review", "can_admins_bypass", "deployment_branch_policy"})
+	settings := pick(spec, []string{"prevent_self_review", "can_admins_bypass"})
+	if configuredPolicy, ok := spec["deployment_branch_policy"].(map[string]any); ok {
+		deploymentPolicy := pick(configuredPolicy, []string{
+			"protected_branches", "custom_branch_policies", "branch_patterns", "tag_patterns",
+		})
+		if _, exists := deploymentPolicy["branch_patterns"]; !exists {
+			deploymentPolicy["branch_patterns"] = []any{}
+		}
+		if _, exists := deploymentPolicy["tag_patterns"]; !exists {
+			deploymentPolicy["tag_patterns"] = []any{}
+		}
+		settings["deployment_branch_policy"] = deploymentPolicy
+	}
 	settings["required_reviewers"] = projectObjectList(spec["required_reviewers"], []string{"type", "team"})
 	repositories := stringValues(spec["repositories"])
 	repositorySettings := make(map[string]any, len(repositories))

@@ -11,6 +11,10 @@ variable "organization" {
     members_can_fork_private_repositories    = bool
     web_commit_signoff_required              = bool
     two_factor_requirement                   = bool
+    custom_property_migration = object({
+      phase                 = string
+      legacy_allowed_values = map(list(string))
+    })
     custom_properties = list(object({
       name               = string
       value_type         = string
@@ -41,6 +45,32 @@ variable "organization" {
       property.values_editable_by == "org_actors"
     ])
     error_message = "Each custom property must have a name, a supported type, and organization-only edit authority."
+  }
+
+  validation {
+    condition = (
+      contains(["preserve", "retire"], var.organization.custom_property_migration.phase) &&
+      alltrue([
+        for name in keys(var.organization.custom_property_migration.legacy_allowed_values) :
+        contains([for property in var.organization.custom_properties : property.name], name)
+      ]) &&
+      alltrue([
+        for name, legacy_values in var.organization.custom_property_migration.legacy_allowed_values :
+        length(legacy_values) > 0 &&
+        length(distinct(legacy_values)) == length(legacy_values) &&
+        alltrue([
+          for legacy_value in legacy_values : alltrue([
+            for property in var.organization.custom_properties :
+            property.name != name || !contains(property.allowed_values, legacy_value)
+          ])
+        ])
+      ]) &&
+      (
+        var.organization.custom_property_migration.phase == "preserve" ||
+        length(var.organization.custom_property_migration.legacy_allowed_values) == 0
+      )
+    )
+    error_message = "Custom-property migration values must be non-empty, unique, disjoint from desired values, and scoped to declared definitions; retirement requires an empty legacy-value map."
   }
 }
 
