@@ -11,46 +11,21 @@ concurrency:
   group: pull-request-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-env:
-  NIX_INSTALLER_SHA256: f964e78c30bb096d1449179d738eeae8f9410df1623d42fe7da972643e0d0e74
-  NIX_INSTALLER_URL: https://github.com/DeterminateSystems/nix-installer/releases/download/v3.12.2/nix-installer-x86_64-linux
-
 jobs:
+  validate:
+    uses: mindclade/.github/.github/workflows/reusable-nix-validation.yml@c097ef86c25991a400050c13e78574e8d3d8c071
+    with:
+      source_revision: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
+
   required:
     name: required
+    needs: validate
+    if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      VALIDATE_RESULT: ${{ needs.validate.result }}
     steps:
-      - name: Check out the reviewed revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Stage the checksum-verified Nix installer
-        shell: bash
-        run: |
-          set -euo pipefail
-          install_root="${RUNNER_TEMP}/nix-installer"
-          installer="${install_root}/nix-installer-x86_64-linux"
-          mkdir -m 0700 "${install_root}"
-          curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-            --tlsv1.2 --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors \
-            --output "${installer}" "${NIX_INSTALLER_URL}"
-          printf '%s  %s\n' "${NIX_INSTALLER_SHA256}" "${installer}" | sha256sum --check --strict
-          chmod 0755 "${installer}"
-
-      - name: Install the reviewed Nix runtime
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v3.15.1 action, v3.12.2 installer below
-        with:
-          determinate: true
-          local-root: ${{ runner.temp }}/nix-installer
-
-      - name: Verify the locked toolchain contract
-        run: |
-          set -euo pipefail
-          nix --version
-          nix build --no-update-lock-file .#toolchain
-          nix flake check --no-update-lock-file --print-build-logs
-
-      - name: Run repository validation through the locked CI shell
-        run: nix develop --no-update-lock-file .#ci --command just ci
+      - name: Require successful Nix validation
+        run: test "${VALIDATE_RESULT}" = success

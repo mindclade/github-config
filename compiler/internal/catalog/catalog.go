@@ -104,6 +104,7 @@ var canonicalWorkflowInventories = map[string][]string{
 	},
 	".github": {
 		"reusable-buildkite-dispatch.yml", "reusable-required-check.yml",
+		"reusable-nix-validation.yml",
 		"reusable-metadata-validation.yml", "reusable-documentation-check.yml",
 		"reusable-dependency-review.yml", "reusable-codeql.yml",
 		"reusable-scorecard.yml", "self-test.yml",

@@ -18,10 +18,11 @@ spec:
   authority_inventories:
     - repository: .github
       revision: e195b71d3657aca32cb325990e5e4ef8789b7eee
-      implementation_revision: 8d3059d5e14e5f7af861ad190e329fa4dac27dfc
+      implementation_revision: c097ef86c25991a400050c13e78574e8d3d8c071
       workflows:
         - reusable-buildkite-dispatch.yml
         - reusable-required-check.yml
+        - reusable-nix-validation.yml
         - reusable-metadata-validation.yml
         - reusable-documentation-check.yml
         - reusable-dependency-review.yml
