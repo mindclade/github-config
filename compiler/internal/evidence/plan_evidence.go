@@ -980,11 +980,13 @@ func summarizePlan(plan, catalog, observed, policyInput map[string]any, phase st
 	destructive := make([]string, 0)
 	replacements := make([]string, 0)
 	var sensitiveCount int64
-	permissionReductionDeleteObserved := false
+	governedRevocationDeleteObserved := false
+	addressesByChangeID := make(map[string]string)
 	changes, _ := plan["resource_changes"].([]any)
 	for index, resource := range sortedResourceChanges(changes) {
 		changeID := fmt.Sprintf("change-%06d", index+1)
 		address, _ := resource["address"].(string)
+		addressesByChangeID[changeID] = address
 		resourceType, _ := resource["type"].(string)
 		if resourceType == "" {
 			resourceType = resourceTypeFromAddress(address)
@@ -997,8 +999,9 @@ func summarizePlan(plan, catalog, observed, policyInput map[string]any, phase st
 		}
 		counts[actionClass] = counts[actionClass].(int64) + 1
 		_, permissionReduction := permissionReductionDeleteTypes[strings.ToLower(resourceType)]
-		if permissionReduction && actionClass == "delete" {
-			permissionReductionDeleteObserved = true
+		if actionClass == "delete" &&
+			(permissionReduction || governedRetirementAddress(strings.ToLower(resourceType), address)) {
+			governedRevocationDeleteObserved = true
 		}
 		if actionClass == "delete" || actionClass == "replace" || actionClass == "forget" {
 			destructive = append(destructive, changeID)
@@ -1028,28 +1031,33 @@ func summarizePlan(plan, catalog, observed, policyInput map[string]any, phase st
 			})
 		}
 	}
-	// Permission-reduction deletes are safe only as a pure revocation plan. A
-	// simultaneous write of any other kind can disguise a key rename, authority
-	// replacement, or grant behind an apparently safe offboarding operation.
-	allWritesArePermissionReductionDeletes := len(writes) > 0
+	// Permission-reduction and governed-retirement deletes are safe only in a
+	// delete-only revocation plan. A simultaneous create/update/replace/forget can
+	// disguise a key rename, authority replacement, or grant behind an apparently
+	// safe offboarding operation. Governed environment/ruleset/team retirements
+	// remain bound to explicit acknowledgement and complete dependency analysis.
+	allWritesAreGovernedRevocations := len(writes) > 0
 	for _, write := range writes {
 		resourceType, _ := write["resource_type"].(string)
+		changeID, _ := write["change_id"].(string)
+		address := addressesByChangeID[changeID]
 		actions := stringSlice(write["actions"])
 		actionClass := allowedActionSets[strings.Join(actions, ",")]
 		_, permissionReduction := permissionReductionDeleteTypes[strings.ToLower(resourceType)]
-		if !permissionReduction || actionClass != "delete" {
-			allWritesArePermissionReductionDeletes = false
+		governedRetirement := governedRetirementAddress(strings.ToLower(resourceType), address)
+		if actionClass != "delete" || (!permissionReduction && !governedRetirement) {
+			allWritesAreGovernedRevocations = false
 			break
 		}
 	}
-	if permissionReductionDeleteObserved && !allWritesArePermissionReductionDeletes {
+	if governedRevocationDeleteObserved && !allWritesAreGovernedRevocations {
 		for _, write := range writes {
 			classes := stringSlice(write["classes"])
 			classes = append(classes, "authority_replacement")
 			sort.Strings(classes)
 			write["classes"] = stringsToAny(uniqueStrings(classes))
 			write["change_class"] = "fundamental_deny"
-			addHighRiskClass(&highRisk, write, "authority_replacement", "permission reductions must be the only writes in a revocation plan")
+			addHighRiskClass(&highRisk, write, "authority_replacement", "governed revocations must be the only writes in a retirement plan")
 		}
 	}
 	sort.Slice(writes, func(i, j int) bool {
@@ -1631,13 +1639,14 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 		add("unknown_change", "one or more security- or authority-relevant post-change values are unknown")
 	}
 	resourceName := strings.ToLower(resourceType)
-	// Environment, deployment-policy, organization-ruleset, and team retirement
-	// are the only non-access deletions that the normal convergence path may
-	// govern. Build still requires explicit acknowledgement plus an exact-plan,
-	// complete DependencyAnalysis for every such deletion. Returning here keeps
-	// generic before-to-null field walkers from misclassifying the reviewed
-	// retirement itself as an unreviewable protection weakening. Repository
-	// deletion, replacement, state-forget, and unknown addresses remain denied.
+	// Environment, environment-variable, deployment-policy,
+	// organization-ruleset, and team retirement are the only non-access
+	// deletions that the normal convergence path may govern. Build still requires
+	// explicit acknowledgement plus an exact-plan, complete DependencyAnalysis
+	// for every such deletion. Returning here keeps generic before-to-null field
+	// walkers from misclassifying the reviewed retirement itself as an
+	// unreviewable protection weakening. Repository deletion, replacement,
+	// state-forget, and unknown addresses remain denied.
 	if actionClass == "delete" && governedRetirementAddress(resourceName, address) {
 		return sortedKeys(classes), sortedKeys(reasons)
 	}
@@ -1934,6 +1943,8 @@ func governedRetirementAddress(resourceType, address string) bool {
 	}
 	base := ""
 	switch resourceType {
+	case "github_actions_environment_variable":
+		base = "module.repository_environments.github_actions_environment_variable.this"
 	case "github_repository_environment":
 		base = "module.repository_environments.github_repository_environment.this"
 	case "github_repository_environment_deployment_policy":

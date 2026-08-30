@@ -417,7 +417,11 @@ cached graph could combine incompatible points in time. Reads instead use
 bounded exponential backoff with per-client randomized jitter and
 `Retry-After`; a failed or partial
 observation is recorded non-authoritatively and the next run starts a fresh
-full observation before re-planning.
+full observation before re-planning. OpenTofu's protected remote state and the
+attempt/receipt evidence are the mutation checkpoint: after a partial apply,
+accepted mutations remain recorded, but continuation always re-observes GitHub
+and produces a new exact plan instead of replaying a cached observation or
+blindly resuming the failed mutation sequence.
 
 The artifact-signing App is selected-repository only. It needs `contents:write`
 to create release refs, but it receives no ruleset-wide bypass: one tag ruleset

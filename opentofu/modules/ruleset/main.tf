@@ -181,8 +181,6 @@ resource "github_organization_ruleset" "this" {
   }
 
   lifecycle {
-    prevent_destroy = true
-
     precondition {
       condition = alltrue([
         for reference in each.value.repositories :

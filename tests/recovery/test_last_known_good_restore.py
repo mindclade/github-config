@@ -337,7 +337,26 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
                 arguments = list(extra)
                 if destructive_review:
                     analysis = directory / "dependency-analysis.json"
-                    write_dependency_analysis(analysis, plan_document, ["change-000001"])
+                    ordered_changes = sorted(
+                        changes,
+                        key=lambda change: (
+                            change.get("address", ""),
+                            json.dumps(change, sort_keys=True, separators=(",", ":")),
+                        ),
+                    )
+                    destructive_ids = [
+                        f"change-{index:06d}"
+                        for index, change in enumerate(ordered_changes, start=1)
+                        if any(
+                            action in {"delete", "forget"}
+                            for action in change.get("change", {}).get("actions", [])
+                        )
+                    ]
+                    write_dependency_analysis(
+                        analysis,
+                        plan_document,
+                        destructive_ids,
+                    )
                     arguments.extend([
                         "--change-reference", "GOV-TEST",
                         "--destructive-change-acknowledged",
@@ -473,6 +492,88 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             self.assertIn(
                 "governed_retirement",
                 reviewed_ruleset_retirement["plan"]["writes"][0]["classes"],
+            )
+
+            disguised_ruleset_replacement = evidence([
+                {
+                    "address": 'module.rulesets.github_organization_ruleset.this["old"]',
+                    "type": "github_organization_ruleset",
+                    "change": {
+                        "actions": ["delete"],
+                        "before": {"name": "old", "enforcement": "evaluate"},
+                        "after": None,
+                    },
+                },
+                {
+                    "address": 'module.rulesets.github_organization_ruleset.this["new"]',
+                    "type": "github_organization_ruleset",
+                    "change": {
+                        "actions": ["create"],
+                        "before": None,
+                        "after": {"name": "new", "enforcement": "active"},
+                    },
+                },
+            ], "--risk-acknowledged", destructive_review=True)
+            self.assertFalse(
+                disguised_ruleset_replacement["decision"]["eligible_for_protected_apply"],
+            )
+            self.assertTrue(all(
+                "authority_replacement" in write["classes"]
+                for write in disguised_ruleset_replacement["plan"]["writes"]
+            ))
+
+            for resource_type, address in (
+                (
+                    "github_actions_environment_variable",
+                    "module.repository_environments."
+                    'github_actions_environment_variable.this["retired:repo:HANDOFF"]',
+                ),
+                (
+                    "github_repository_environment",
+                    'module.repository_environments.github_repository_environment.this["github-config:retired"]',
+                ),
+                (
+                    "github_repository_environment_deployment_policy",
+                    'module.repository_environments.github_repository_environment_deployment_policy.this["github-config:retired:branch:main"]',
+                ),
+                (
+                    "github_team",
+                    'module.team_access.github_team.this["retired-team"]',
+                ),
+            ):
+                with self.subTest(governed_retirement=resource_type):
+                    reviewed_retirement = evidence([{
+                        "address": address,
+                        "type": resource_type,
+                        "change": {"actions": ["delete"], "before": {"id": 1}, "after": None},
+                    }], destructive_review=True)
+                    self.assertTrue(reviewed_retirement["decision"]["eligible_for_protected_apply"])
+                    self.assertIn(
+                        "governed_retirement",
+                        reviewed_retirement["plan"]["writes"][0]["classes"],
+                    )
+
+            reviewed_team_retirement = evidence([
+                {
+                    "address": 'module.team_access.github_team_membership.this["retired-team:user"]',
+                    "type": "github_team_membership",
+                    "change": {"actions": ["delete"], "before": {"role": "member"}, "after": None},
+                },
+                {
+                    "address": 'module.team_access.github_team_repository.this["repo:retired-team"]',
+                    "type": "github_team_repository",
+                    "change": {"actions": ["delete"], "before": {"permission": "push"}, "after": None},
+                },
+                {
+                    "address": 'module.team_access.github_team.this["retired-team"]',
+                    "type": "github_team",
+                    "change": {"actions": ["delete"], "before": {"name": "retired-team"}, "after": None},
+                },
+            ], destructive_review=True)
+            self.assertTrue(reviewed_team_retirement["decision"]["eligible_for_protected_apply"])
+            self.assertEqual(
+                reviewed_team_retirement["plan"]["destructive_change_ids"],
+                ["change-000001", "change-000002", "change-000003"],
             )
 
             reviewed_repository_deletion = evidence([{

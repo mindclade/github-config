@@ -578,6 +578,35 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(drift.count('implementation_destination="$authority_root/.github-implementation"'), 1)
         self.assertEqual(protected.count('implementation_destination="$authority_root/.github-implementation"'), 2)
 
+    def test_governed_retirements_align_evidence_and_opentofu_lifecycle(self):
+        environment_module = (
+            ROOT / "opentofu" / "modules" / "repository-environment" / "main.tf"
+        ).read_text()
+        ruleset_module = (ROOT / "opentofu" / "modules" / "ruleset" / "main.tf").read_text()
+        team_module = (ROOT / "opentofu" / "modules" / "team-access" / "main.tf").read_text()
+        repository_module = (
+            ROOT / "opentofu" / "modules" / "repository-governance" / "main.tf"
+        ).read_text()
+
+        environment_resource = environment_module.split(
+            'resource "github_repository_environment" "this" {', 1,
+        )[1].split('resource "github_repository_environment_deployment_policy"', 1)[0]
+        deployment_policy_resource = environment_module.split(
+            'resource "github_repository_environment_deployment_policy" "this" {', 1,
+        )[1].split('resource "github_actions_environment_variable"', 1)[0]
+        team_resource = team_module.split('resource "github_team" "this" {', 1)[1].split(
+            'resource "github_organization_role_team"', 1,
+        )[0]
+        repository_resource = repository_module.split(
+            'resource "github_repository" "this" {', 1,
+        )[1].split('resource "github_repository_dependabot_security_updates"', 1)[0]
+
+        self.assertNotIn("prevent_destroy", environment_resource)
+        self.assertNotIn("prevent_destroy", deployment_policy_resource)
+        self.assertNotIn("prevent_destroy", ruleset_module)
+        self.assertNotIn("prevent_destroy", team_resource)
+        self.assertIn("prevent_destroy = true", repository_resource)
+
     def test_duplicate_alias_unknown_and_secret_inputs_fail_closed(self):
         cases = {
             "duplicate": "\nkind: Organization\n",

@@ -76,8 +76,6 @@ resource "github_team" "this" {
   privacy     = each.value.privacy
 
   lifecycle {
-    prevent_destroy = true
-
     # Team notification delivery and Enterprise Server LDAP binding are not
     # catalog controls. Preserve their live values across unrelated updates.
     ignore_changes = [notification_setting, ldap_dn]

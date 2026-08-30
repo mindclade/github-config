@@ -103,8 +103,6 @@ resource "github_repository_environment" "this" {
   }
 
   lifecycle {
-    prevent_destroy = true
-
     # wait_timer is not part of the catalog or compiler managed projection.
     # Preserve any live timer until the source contract explicitly models it.
     ignore_changes = [wait_timer]
@@ -141,9 +139,6 @@ resource "github_repository_environment_deployment_policy" "this" {
 
   depends_on = [github_repository_environment.this]
 
-  lifecycle {
-    prevent_destroy = true
-  }
 }
 
 resource "github_actions_environment_variable" "this" {
