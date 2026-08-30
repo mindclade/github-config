@@ -2,7 +2,7 @@ api_version: github.mindclade.io/v1
 kind: Ruleset
 metadata:
   id: deployment-source
-  owner_team: release-engineering
+  owner_team: platform-operations
 spec:
   target: branch
   enforcement: active

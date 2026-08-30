@@ -49,6 +49,40 @@ class PermissionReductionTest(unittest.TestCase):
         self.assertEqual(catalog["teams"]["security"]["privacy"], "closed")
         self.assertEqual(catalog["organization"]["custom_property_migration"]["phase"], "preserve")
 
+        gitops = catalog["repositories"]["gitops"]
+        self.assertEqual(gitops["custom_properties"]["owner_team"], "platform-operations")
+        self.assertEqual(
+            {grant["team"]: grant["permission"] for grant in gitops["team_grants"]},
+            {
+                "platform-operations": "maintain",
+                "release-engineering": "push",
+                "security": "push",
+            },
+        )
+        self.assertEqual(catalog["repositories"]["mindclade"]["name"], "mindclade")
+
+        production_promotion = catalog["environments"]["production-promotion"]
+        self.assertEqual(production_promotion["repositories"], ["gitops"])
+        self.assertEqual(
+            production_promotion["allowed_workflows"],
+            [
+                ".github/workflows/promotion.yml",
+                ".github/workflows/rollback-verification.yml",
+            ],
+        )
+        self.assertEqual(production_promotion["activation"]["state"], "blocked")
+
+        gitops_authority = next(
+            authority
+            for authority in catalog["actions_policy"]["authority_inventories"]
+            if authority["repository"] == "gitops"
+        )
+        self.assertEqual(gitops_authority["revision"], "")
+        self.assertEqual(gitops_authority["activation"], {
+            "state": "blocked",
+            "blockers": ["gitops-thin-reusable-caller-qualification-pending"],
+        })
+
         allowed_pins = {
             action["source"]: action["commit"]
             for action in catalog["actions_policy"]["allowed_actions"]

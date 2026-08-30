@@ -5,7 +5,7 @@ metadata:
   owner_team: product-engineering
 spec:
   name: product-engineering
-  description: Product monorepo and application source owners.
+  description: mindclade/mindclade product source and application owners.
   privacy: closed
   parent_team: null
   members: []

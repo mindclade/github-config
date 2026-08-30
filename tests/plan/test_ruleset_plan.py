@@ -54,6 +54,18 @@ class RulesetPlanTest(unittest.TestCase):
             else:
                 self.assertTrue(rules["update"], name)
 
+        deployment = catalog["rulesets"]["deployment-source"]
+        self.assertEqual(deployment["repositories"], ["gitops"])
+        self.assertEqual(
+            deployment["rules"]["required_status_checks"]["checks"],
+            [{
+                "context": "Pull request / required",
+                "issuer_type": "github_actions",
+                "workflow_path": ".github/workflows/pull-request.yml",
+                "triggers": ["pull_request", "merge_group"],
+            }],
+        )
+
     def test_repository_ruleset_references_resolve(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "catalog.json"

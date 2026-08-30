@@ -264,6 +264,28 @@ func ValidateCatalog(documents []*Document) error {
 		if grants[owner] < 4 {
 			return fmt.Errorf("%s: repository owner team %q must have maintain access", document.Path, owner)
 		}
+		if strings.EqualFold(name, "gitops") {
+			metadataOwner := strings.ToLower(stringValue(document.Metadata["owner_team"]))
+			if metadataOwner != "platform-operations" || owner != "platform-operations" {
+				return fmt.Errorf("%s: GitOps repository authority must be owned by platform-operations", document.Path)
+			}
+			expectedGrants := map[string]int{
+				"platform-operations": 4,
+				"release-engineering": 3,
+				"security":            3,
+			}
+			if len(grants) != len(expectedGrants) {
+				return fmt.Errorf("%s: GitOps repository must grant exactly platform-operations maintain and release-engineering/security push", document.Path)
+			}
+			for team, expectedRank := range expectedGrants {
+				if grants[team] != expectedRank {
+					return fmt.Errorf("%s: GitOps CODEOWNERS team %q lacks its exact required repository access", document.Path, team)
+				}
+				if stringValue(teamSpecs[team]["privacy"]) != "closed" {
+					return fmt.Errorf("%s: GitOps CODEOWNERS team %q must be organization-visible (privacy closed)", document.Path, team)
+				}
+			}
+		}
 		if name == ".github" {
 			if stringValue(spec["actions_access_level"]) != "organization" {
 				return fmt.Errorf("%s: organization .github repository must share reusable workflows at organization access level", document.Path)
@@ -297,6 +319,22 @@ func ValidateCatalog(documents []*Document) error {
 					return fmt.Errorf("%s: duplicate allowed action source %q", document.Path, source)
 				}
 				sources.add(source)
+			}
+			gitopsAuthorityFound := false
+			for _, authority := range objectList(spec["authority_inventories"]) {
+				if stringValue(authority["repository"]) != "gitops" {
+					continue
+				}
+				gitopsAuthorityFound = true
+				activation := specObject(authority, "activation")
+				blockers := stringList(activation["blockers"])
+				if stringValue(authority["revision"]) != "" || stringValue(activation["state"]) != "blocked" ||
+					len(blockers) != 1 || blockers[0] != "gitops-thin-reusable-caller-qualification-pending" {
+					return fmt.Errorf("%s: GitOps workflow authority must remain revisionless and blocked on thin reusable caller qualification", document.Path)
+				}
+			}
+			if !gitopsAuthorityFound {
+				return fmt.Errorf("%s: GitOps workflow authority inventory is required", document.Path)
 			}
 		case "Team":
 			for _, member := range objectList(spec["members"]) {
@@ -356,6 +394,21 @@ func ValidateCatalog(documents []*Document) error {
 				}
 				checkContexts.add(context)
 			}
+			if document.ID == "deployment-source" {
+				if stringValue(document.Metadata["owner_team"]) != "platform-operations" {
+					return fmt.Errorf("%s: deployment-source ruleset must be owned by platform-operations", document.Path)
+				}
+				checks := objectList(specObject(specObject(spec, "rules"), "required_status_checks")["checks"])
+				if len(checks) != 1 || stringValue(checks[0]["context"]) != "Pull request / required" ||
+					stringValue(checks[0]["workflow_path"]) != ".github/workflows/pull-request.yml" {
+					return fmt.Errorf("%s: deployment-source must require the canonical Pull request / required workflow context", document.Path)
+				}
+				triggers := stringList(checks[0]["triggers"])
+				sort.Strings(triggers)
+				if strings.Join(triggers, "\x00") != "merge_group\x00pull_request" {
+					return fmt.Errorf("%s: deployment-source required check must cover pull_request and merge_group", document.Path)
+				}
+			}
 			if err := requireReferences(document.Path, "spec.rules.authorized_creator_integrations", valuesForKey(spec, "authorized_creator_integrations"), integrations); err != nil {
 				return err
 			}
@@ -381,6 +434,19 @@ func ValidateCatalog(documents []*Document) error {
 				}
 			}
 			activation := specObject(spec, "activation")
+			if stringValue(spec["name"]) == "production-promotion" {
+				workflows := stringList(spec["allowed_workflows"])
+				sort.Strings(workflows)
+				if strings.Join(workflows, "\x00") != ".github/workflows/promotion.yml\x00.github/workflows/rollback-verification.yml" {
+					return fmt.Errorf("%s: production-promotion must authorize exactly promotion and rollback verification", document.Path)
+				}
+				if repositories := stringList(spec["repositories"]); len(repositories) != 1 || repositories[0] != "gitops" {
+					return fmt.Errorf("%s: production-promotion must apply only to gitops", document.Path)
+				}
+				if stringValue(activation["state"]) != "blocked" {
+					return fmt.Errorf("%s: production-promotion must remain blocked until connected qualification", document.Path)
+				}
+			}
 			if stringValue(spec["name"]) == "infrastructure-apply" {
 				if err := validateInfrastructureApplyHandoff(document.Path, spec, activation); err != nil {
 					return err

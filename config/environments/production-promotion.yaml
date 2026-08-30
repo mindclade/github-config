@@ -20,7 +20,9 @@ spec:
   deployment_branch_policy:
     protected_branches: true
     custom_branch_policies: false
-  allowed_workflows: [.github/workflows/promotion.yml]
+  allowed_workflows:
+    - .github/workflows/promotion.yml
+    - .github/workflows/rollback-verification.yml
   activation:
     state: blocked
     blockers: [unstaffed-reviewer-team, protected-environment-not-qualified]

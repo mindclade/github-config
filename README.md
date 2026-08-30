@@ -336,10 +336,11 @@ blocked until all of the following are true:
   the implementation commit to be catalog ancestry, parses every canonical
   template, and independently parses the reusable-workflow tree detached at
   that exact implementation revision;
-- the `gitops` authority remains fail-closed until its canonical workflows use
-  the same reviewed external-action pins as this control-plane catalog; its
-  stale checkout pin is recorded as
-  `gitops-authority-action-pin-parity-pending`, with no claimed revision;
+- the `gitops` authority remains fail-closed until its canonical workflows are
+  qualified as the thin, commit-pinned reusable callers required by Blueprint
+  A3.8; this is recorded as
+  `gitops-thin-reusable-caller-qualification-pending`, with no claimed
+  revision;
 - required checks are bound to qualified issuer App IDs and an immutable
   required-workflow source repository/ref (a matching context string alone is
   insufficient);

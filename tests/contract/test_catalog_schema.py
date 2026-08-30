@@ -348,6 +348,71 @@ class CatalogSchemaTest(unittest.TestCase):
         if present == 0:
             self.skipTest("no sibling canonical authority repositories are present")
 
+    def test_infrastructure_handoff_and_drift_audience_match_reviewed_authority(self):
+        repository = ROOT.parent / "infrastructure-live"
+        if not (repository / ".git").exists():
+            self.skipTest("sibling infrastructure-live canonical source is not present")
+        result = invoke("compile", "--output", "-")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        catalog = json.loads(result.stdout)
+        authority = next(
+            item
+            for item in catalog["actions_policy"]["authority_inventories"]
+            if item["repository"] == "infrastructure-live"
+        )
+        self.assertEqual(authority["activation"]["state"], "reviewed")
+        revision = authority["revision"]
+        protected = subprocess.run(
+            [
+                "git", "-C", str(repository), "show",
+                f"{revision}:.github/workflows/protected-apply.yml",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        disaster_recovery = subprocess.run(
+            [
+                "git", "-C", str(repository), "show",
+                f"{revision}:.github/workflows/disaster-recovery.yml",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        drift_detection = subprocess.run(
+            [
+                "git", "-C", str(repository), "show",
+                f"{revision}:.github/workflows/drift-detection.yml",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        ).stdout
+        for environment in ("DEVELOPMENT", "STAGING", "PRODUCTION", "RESTRICTED"):
+            for prefix in (
+                "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_",
+                "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_",
+                "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_",
+            ):
+                self.assertIn(prefix + environment, protected)
+        for variable in (
+            "CI_EVIDENCE_VERIFIER_WIF_PROVIDER",
+            "CI_EVIDENCE_VERIFIER_SERVICE_ACCOUNT",
+            "CI_EVIDENCE_ARCHIVE_BUCKET",
+        ):
+            self.assertIn(variable, disaster_recovery)
+        drift_subject = next(
+            subject
+            for subject in catalog["oidc_policy"]["subjects"]
+            if subject["id"] == "infrastructure-drift-plan"
+        )
+        self.assertEqual(drift_subject["audience"], "sts.googleapis.com")
+        self.assertEqual(
+            re.findall(r"(?m)^\s+audience:\s+([^\s#]+)", drift_detection),
+            [drift_subject["audience"]],
+        )
+
     def test_component_metadata_is_truthful_and_complete(self):
         root = self.temporary_catalog()
         component = root / "component.yaml"
@@ -566,6 +631,78 @@ class CatalogSchemaTest(unittest.TestCase):
         result = invoke("validate", root=root)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("has no exact immutable OIDC subject authority", result.stderr)
+
+    def test_gitops_connected_governance_contract_fails_closed(self):
+        cases = {
+            "repository-owner": (
+                "config/repositories/gitops.yaml",
+                "owner_team: platform-operations",
+                "owner_team: release-engineering",
+                "owned by platform-operations",
+            ),
+            "codeowner-access": (
+                "config/repositories/gitops.yaml",
+                "    - team: security\n      permission: push\n",
+                "    - team: security\n      permission: pull\n",
+                "CODEOWNERS team \"security\"",
+            ),
+            "ruleset-owner": (
+                "config/rulesets/deployment-source.yaml",
+                "owner_team: platform-operations",
+                "owner_team: release-engineering",
+                "ruleset must be owned by platform-operations",
+            ),
+            "required-context": (
+                "config/rulesets/deployment-source.yaml",
+                "context: Pull request / required",
+                "context: Pull request validation / required",
+                "canonical Pull request / required",
+            ),
+            "rollback-authority": (
+                "config/environments/production-promotion.yaml",
+                "    - .github/workflows/rollback-verification.yml\n",
+                "",
+                "authorize exactly promotion and rollback verification",
+            ),
+            "workflow-activation": (
+                "config/actions-policy.yaml",
+                "gitops-thin-reusable-caller-qualification-pending",
+                "gitops-authority-action-pin-parity-pending",
+                "blocked on thin reusable caller qualification",
+            ),
+        }
+        for label, (relative, old, new, expected) in cases.items():
+            with self.subTest(label=label):
+                root = self.temporary_catalog()
+                path = root / relative
+                source = path.read_text()
+                self.assertIn(old, source)
+                path.write_text(source.replace(old, new, 1))
+                result = invoke("validate", root=root)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+
+    def test_sibling_gitops_codeowners_have_explicit_write_access(self):
+        gitops = ROOT.parent / "gitops"
+        codeowners = gitops / ".github" / "CODEOWNERS"
+        if not codeowners.is_file():
+            self.skipTest("sibling GitOps CODEOWNERS source is not present")
+
+        result = invoke("compile", "--output", "-")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        repository = json.loads(result.stdout)["repositories"]["gitops"]
+        ranks = {"pull": 1, "triage": 2, "push": 3, "maintain": 4}
+        grants = {
+            grant["team"]: ranks[grant["permission"]]
+            for grant in repository["team_grants"]
+        }
+        owner_teams = set(re.findall(r"@mindclade/([a-z0-9-]+)", codeowners.read_text()))
+        self.assertEqual(
+            owner_teams,
+            {"platform-operations", "release-engineering", "security"},
+        )
+        for team in owner_teams:
+            self.assertGreaterEqual(grants.get(team, 0), ranks["push"], team)
 
     def test_every_local_codeowners_team_has_visible_write_access(self):
         root = self.temporary_catalog()
@@ -847,7 +984,7 @@ class CatalogSchemaTest(unittest.TestCase):
         root = self.temporary_catalog()
         actions = root / "config" / "actions-policy.yaml"
         actions.write_text(actions.read_text().replace(
-            "    - repository: gitops\n", "    - repository: bootstrap\n", 1,
+            "    - repository: mindclade\n", "    - repository: bootstrap\n", 1,
         ))
         result = invoke("validate", root=root)
         self.assertNotEqual(result.returncode, 0)

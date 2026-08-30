@@ -2,7 +2,7 @@ api_version: github.mindclade.io/v1
 kind: Repository
 metadata:
   id: gitops
-  owner_team: release-engineering
+  owner_team: platform-operations
 spec:
   name: gitops
   description: Desired cluster application state and promotion-by-digest authority.
@@ -33,7 +33,7 @@ spec:
     secret_scanning_push_protection: true
   custom_properties:
     repository_class: deployment-source
-    owner_team: release-engineering
+    owner_team: platform-operations
     criticality: critical
     data_classification: confidential
     lifecycle: active
@@ -41,8 +41,10 @@ spec:
     language_profile: yaml-kustomize
     production_authority: production-deployment
   team_grants:
+    - team: platform-operations
+      permission: maintain
     - team: release-engineering
-      permission: maintain
-    - team: developer-platform
-      permission: maintain
+      permission: push
+    - team: security
+      permission: push
   direct_collaborators: []
