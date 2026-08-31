@@ -6,10 +6,10 @@
   "additionalProperties": false,
   "required": ["api_version", "kind", "metadata", "spec"],
   "properties": {
-    "api_version": {"const": "github.mindclade.io/v1"},
-    "kind": {"const": "Environment"},
-    "metadata": {"$ref": "#/$defs/metadata"},
-    "spec": {"$ref": "#/$defs/spec"}
+    "api_version": { "const": "github.mindclade.io/v1" },
+    "kind": { "const": "Environment" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/spec" }
   },
   "$defs": {
     "metadata": {
@@ -17,8 +17,8 @@
       "additionalProperties": false,
       "required": ["id", "owner_team"],
       "properties": {
-        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
-        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+        "owner_team": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" }
       }
     },
     "activation": {
@@ -26,8 +26,12 @@
       "additionalProperties": false,
       "required": ["state", "blockers"],
       "properties": {
-        "state": {"enum": ["ready", "blocked"]},
-        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}}
+        "state": { "enum": ["ready", "blocked"] },
+        "blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]+$" }
+        }
       }
     },
     "reviewer": {
@@ -35,20 +39,26 @@
       "additionalProperties": false,
       "required": ["type", "team"],
       "properties": {
-        "type": {"const": "team"},
-        "team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+        "type": { "const": "team" },
+        "team": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" }
       }
     },
     "approvalPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["minimum_required_reviewers", "minimum_distinct_principals", "require_pr_approval", "require_code_owner_review", "require_reviewer_different_from_pr_approver"],
+      "required": [
+        "minimum_required_reviewers",
+        "minimum_distinct_principals",
+        "require_pr_approval",
+        "require_code_owner_review",
+        "require_reviewer_different_from_pr_approver"
+      ],
       "properties": {
-        "minimum_required_reviewers": {"type": "integer", "minimum": 1, "maximum": 6},
-        "minimum_distinct_principals": {"type": "integer", "minimum": 2, "maximum": 10},
-        "require_pr_approval": {"type": "boolean"},
-        "require_code_owner_review": {"type": "boolean"},
-        "require_reviewer_different_from_pr_approver": {"type": "boolean"}
+        "minimum_required_reviewers": { "type": "integer", "minimum": 1, "maximum": 6 },
+        "minimum_distinct_principals": { "type": "integer", "minimum": 2, "maximum": 10 },
+        "require_pr_approval": { "type": "boolean" },
+        "require_code_owner_review": { "type": "boolean" },
+        "require_reviewer_different_from_pr_approver": { "type": "boolean" }
       }
     },
     "branchPolicy": {
@@ -56,28 +66,41 @@
       "additionalProperties": false,
       "required": ["protected_branches", "custom_branch_policies"],
       "properties": {
-        "protected_branches": {"type": "boolean"},
-        "custom_branch_policies": {"type": "boolean"},
-        "branch_patterns": {"type": "array", "default": [], "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-        "tag_patterns": {"type": "array", "default": [], "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+        "protected_branches": { "type": "boolean" },
+        "custom_branch_policies": { "type": "boolean" },
+        "branch_patterns": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "tag_patterns": {
+          "type": "array",
+          "default": [],
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
       },
       "allOf": [
         {
-          "if": {"properties": {"custom_branch_policies": {"const": true}}},
+          "if": { "properties": { "custom_branch_policies": { "const": true } } },
           "then": {
             "properties": {
-              "protected_branches": {"const": false}
+              "protected_branches": { "const": false }
             },
             "anyOf": [
-              {"required": ["branch_patterns"], "properties": {"branch_patterns": {"minItems": 1}}},
-              {"required": ["tag_patterns"], "properties": {"tag_patterns": {"minItems": 1}}}
+              {
+                "required": ["branch_patterns"],
+                "properties": { "branch_patterns": { "minItems": 1 } }
+              },
+              { "required": ["tag_patterns"], "properties": { "tag_patterns": { "minItems": 1 } } }
             ]
           },
           "else": {
             "properties": {
-              "protected_branches": {"const": true},
-              "branch_patterns": {"maxItems": 0},
-              "tag_patterns": {"maxItems": 0}
+              "protected_branches": { "const": true },
+              "branch_patterns": { "maxItems": 0 },
+              "tag_patterns": { "maxItems": 0 }
             }
           }
         }
@@ -87,21 +110,46 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "CI_EVIDENCE_VERIFIER_WIF_PROVIDER": {"type": "string", "pattern": "^projects/[1-9][0-9]*/locations/global/workloadIdentityPools/github-ci-evidence/providers/verifier$"},
-        "CI_EVIDENCE_VERIFIER_SERVICE_ACCOUNT": {"type": "string", "pattern": "^ci-evidence-verifier@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$"},
-        "CI_EVIDENCE_ARCHIVE_BUCKET": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$"},
-        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_DEVELOPMENT": {"$ref": "#/$defs/exportKeyVersion"},
-        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_STAGING": {"$ref": "#/$defs/exportKeyVersion"},
-        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_PRODUCTION": {"$ref": "#/$defs/exportKeyVersion"},
-        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_RESTRICTED": {"$ref": "#/$defs/exportKeyVersion"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_DEVELOPMENT": {"$ref": "#/$defs/exportPublicKeyPEM"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_STAGING": {"$ref": "#/$defs/exportPublicKeyPEM"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_PRODUCTION": {"$ref": "#/$defs/exportPublicKeyPEM"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_RESTRICTED": {"$ref": "#/$defs/exportPublicKeyPEM"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_DEVELOPMENT": {"$ref": "#/$defs/exportPublicKeyDigest"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_STAGING": {"$ref": "#/$defs/exportPublicKeyDigest"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_PRODUCTION": {"$ref": "#/$defs/exportPublicKeyDigest"},
-        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_RESTRICTED": {"$ref": "#/$defs/exportPublicKeyDigest"}
+        "CI_EVIDENCE_VERIFIER_WIF_PROVIDER": {
+          "type": "string",
+          "pattern": "^projects/[1-9][0-9]*/locations/global/workloadIdentityPools/github-ci-evidence/providers/verifier$"
+        },
+        "CI_EVIDENCE_VERIFIER_SERVICE_ACCOUNT": {
+          "type": "string",
+          "pattern": "^ci-evidence-verifier@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$"
+        },
+        "CI_EVIDENCE_ARCHIVE_BUCKET": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{1,61}[a-z0-9]$"
+        },
+        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_DEVELOPMENT": { "$ref": "#/$defs/exportKeyVersion" },
+        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_STAGING": { "$ref": "#/$defs/exportKeyVersion" },
+        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_PRODUCTION": { "$ref": "#/$defs/exportKeyVersion" },
+        "INFRASTRUCTURE_EXPORT_KMS_KEY_VERSION_RESTRICTED": { "$ref": "#/$defs/exportKeyVersion" },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_DEVELOPMENT": {
+          "$ref": "#/$defs/exportPublicKeyPEM"
+        },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_STAGING": {
+          "$ref": "#/$defs/exportPublicKeyPEM"
+        },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_PRODUCTION": {
+          "$ref": "#/$defs/exportPublicKeyPEM"
+        },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_PEM_B64_RESTRICTED": {
+          "$ref": "#/$defs/exportPublicKeyPEM"
+        },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_DEVELOPMENT": {
+          "$ref": "#/$defs/exportPublicKeyDigest"
+        },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_STAGING": {
+          "$ref": "#/$defs/exportPublicKeyDigest"
+        },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_PRODUCTION": {
+          "$ref": "#/$defs/exportPublicKeyDigest"
+        },
+        "INFRASTRUCTURE_EXPORT_PUBLIC_KEY_DIGEST_RESTRICTED": {
+          "$ref": "#/$defs/exportPublicKeyDigest"
+        }
       }
     },
     "exportKeyVersion": {
@@ -109,37 +157,65 @@
       "pattern": "^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/infrastructure-export/cryptoKeyVersions/[1-9][0-9]*$"
     },
     "exportPublicKeyPEM": {
-      "type": "string", "minLength": 1, "maxLength": 4096,
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
       "pattern": "^[A-Za-z0-9+/]+={0,2}$"
     },
     "exportPublicKeyDigest": {
-      "type": "string", "pattern": "^sha256:[0-9a-f]{64}$"
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
     },
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "repositories", "prevent_self_review", "can_admins_bypass", "required_reviewers", "approval_policy", "deployment_branch_policy", "allowed_workflows", "activation"],
+      "required": [
+        "name",
+        "repositories",
+        "prevent_self_review",
+        "can_admins_bypass",
+        "required_reviewers",
+        "approval_policy",
+        "deployment_branch_policy",
+        "allowed_workflows",
+        "activation"
+      ],
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
-        "repositories": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$"}},
-        "prevent_self_review": {"type": "boolean"},
-        "can_admins_bypass": {"type": "boolean"},
-        "required_reviewers": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"$ref": "#/$defs/reviewer"}},
-        "approval_policy": {"$ref": "#/$defs/approvalPolicy"},
-        "deployment_branch_policy": {"$ref": "#/$defs/branchPolicy"},
-        "allowed_workflows": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"}},
-        "variables": {"$ref": "#/$defs/environmentVariables"},
-        "activation": {"$ref": "#/$defs/activation"}
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+        "repositories": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$" }
+        },
+        "prevent_self_review": { "type": "boolean" },
+        "can_admins_bypass": { "type": "boolean" },
+        "required_reviewers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": { "$ref": "#/$defs/reviewer" }
+        },
+        "approval_policy": { "$ref": "#/$defs/approvalPolicy" },
+        "deployment_branch_policy": { "$ref": "#/$defs/branchPolicy" },
+        "allowed_workflows": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$" }
+        },
+        "variables": { "$ref": "#/$defs/environmentVariables" },
+        "activation": { "$ref": "#/$defs/activation" }
       },
       "allOf": [
         {
           "if": {
             "required": ["name", "activation"],
             "properties": {
-              "name": {"const": "infrastructure-apply"},
+              "name": { "const": "infrastructure-apply" },
               "activation": {
                 "required": ["state"],
-                "properties": {"state": {"const": "ready"}}
+                "properties": { "state": { "const": "ready" } }
               }
             }
           },
@@ -170,7 +246,7 @@
             }
           },
           "else": {
-            "properties": {"variables": {"maxProperties": 0}}
+            "properties": { "variables": { "maxProperties": 0 } }
           }
         }
       ]

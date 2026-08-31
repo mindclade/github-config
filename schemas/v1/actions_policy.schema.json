@@ -6,10 +6,10 @@
   "additionalProperties": false,
   "required": ["api_version", "kind", "metadata", "spec"],
   "properties": {
-    "api_version": {"const": "github.mindclade.io/v1"},
-    "kind": {"const": "ActionsPolicy"},
-    "metadata": {"$ref": "#/$defs/metadata"},
-    "spec": {"$ref": "#/$defs/spec"}
+    "api_version": { "const": "github.mindclade.io/v1" },
+    "kind": { "const": "ActionsPolicy" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/spec" }
   },
   "$defs": {
     "metadata": {
@@ -17,8 +17,8 @@
       "additionalProperties": false,
       "required": ["id", "owner_team"],
       "properties": {
-        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
-        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+        "owner_team": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" }
       }
     },
     "runnerPolicy": {
@@ -26,9 +26,9 @@
       "additionalProperties": false,
       "required": ["github_hosted", "self_hosted", "public_fork_pull_requests"],
       "properties": {
-        "github_hosted": {"type": "boolean"},
-        "self_hosted": {"type": "boolean"},
-        "public_fork_pull_requests": {"type": "boolean"}
+        "github_hosted": { "type": "boolean" },
+        "self_hosted": { "type": "boolean" },
+        "public_fork_pull_requests": { "type": "boolean" }
       }
     },
     "allowedAction": {
@@ -36,8 +36,8 @@
       "additionalProperties": false,
       "required": ["source", "commit"],
       "properties": {
-        "source": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},
-        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        "source": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
       }
     },
     "authorityActivation": {
@@ -46,17 +46,19 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["state"],
-          "properties": {"state": {"const": "reviewed"}}
+          "properties": { "state": { "const": "reviewed" } }
         },
         {
           "type": "object",
           "additionalProperties": false,
           "required": ["state", "blockers"],
           "properties": {
-            "state": {"const": "blocked"},
+            "state": { "const": "blocked" },
             "blockers": {
-              "type": "array", "minItems": 1, "uniqueItems": true,
-              "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]+$" }
             }
           }
         }
@@ -67,14 +69,18 @@
       "additionalProperties": false,
       "required": ["repository", "revision", "workflows", "activation"],
       "properties": {
-        "repository": {"enum": [".github", "bootstrap", "infrastructure-live", "gitops", "mindclade"]},
-        "revision": {"type": "string", "pattern": "^(?:[0-9a-f]{40})?$"},
-        "implementation_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-        "workflows": {
-          "type": "array", "minItems": 1, "uniqueItems": true,
-          "items": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.ya?ml$"}
+        "repository": {
+          "enum": [".github", "bootstrap", "infrastructure-live", "gitops", "mindclade"]
         },
-        "activation": {"$ref": "#/$defs/authorityActivation"}
+        "revision": { "type": "string", "pattern": "^(?:[0-9a-f]{40})?$" },
+        "implementation_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "workflows": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.ya?ml$" }
+        },
+        "activation": { "$ref": "#/$defs/authorityActivation" }
       }
     },
     "spec": {
@@ -93,25 +99,25 @@
         "authority_inventories"
       ],
       "properties": {
-        "mode": {"enum": ["local_only", "selected", "all"]},
-        "enabled_repositories": {"enum": ["all", "none"]},
-        "github_owned_allowed": {"type": "boolean"},
-        "verified_creator_allowed": {"type": "boolean"},
-        "default_workflow_permissions": {"enum": ["read", "write"]},
-        "can_approve_pull_request_reviews": {"type": "boolean"},
-        "required_pin": {"const": "commit_sha"},
-        "runner_policy": {"$ref": "#/$defs/runnerPolicy"},
+        "mode": { "enum": ["local_only", "selected", "all"] },
+        "enabled_repositories": { "enum": ["all", "none"] },
+        "github_owned_allowed": { "type": "boolean" },
+        "verified_creator_allowed": { "type": "boolean" },
+        "default_workflow_permissions": { "enum": ["read", "write"] },
+        "can_approve_pull_request_reviews": { "type": "boolean" },
+        "required_pin": { "const": "commit_sha" },
+        "runner_policy": { "$ref": "#/$defs/runnerPolicy" },
         "allowed_actions": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/allowedAction"}
+          "items": { "$ref": "#/$defs/allowedAction" }
         },
         "authority_inventories": {
           "type": "array",
           "minItems": 5,
           "maxItems": 5,
-          "items": {"$ref": "#/$defs/authorityInventory"}
+          "items": { "$ref": "#/$defs/authorityInventory" }
         }
       }
     }

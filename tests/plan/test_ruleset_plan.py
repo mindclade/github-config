@@ -1,11 +1,11 @@
+# pyright: basic, reportArgumentType=false, reportAttributeAccessIssue=false, reportCallIssue=false, reportOperatorIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
-
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = os.environ.get("GITHUB_CONFIGCTL") or (sys.argv[1] if len(sys.argv) > 1 else "")
@@ -16,8 +16,13 @@ def invoke(*arguments):
         command, cwd = [str(Path(CLI).resolve())], ROOT
     else:
         command, cwd = ["go", "run", "./cmd/github-configctl"], ROOT / "compiler"
-    return subprocess.run(command + ["--root", str(ROOT), *arguments], cwd=cwd, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    return subprocess.run(
+        [*command, "--root", str(ROOT), *arguments],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 class RulesetPlanTest(unittest.TestCase):
@@ -30,8 +35,13 @@ class RulesetPlanTest(unittest.TestCase):
 
         self.assertEqual(
             set(catalog["rulesets"]),
-            {"application-source", "governance-source", "infrastructure-source",
-             "deployment-source", "release-tags"},
+            {
+                "application-source",
+                "governance-source",
+                "infrastructure-source",
+                "deployment-source",
+                "release-tags",
+            },
         )
         for name, ruleset in catalog["rulesets"].items():
             self.assertEqual(ruleset["enforcement"], "active", name)
@@ -57,28 +67,33 @@ class RulesetPlanTest(unittest.TestCase):
         application = catalog["rulesets"]["application-source"]
         self.assertEqual(application["bypass_actors"], [])
         self.assertEqual(
-            application["rules"]["pull_request"]["required_approving_review_count"], 2,
+            application["rules"]["pull_request"]["required_approving_review_count"],
+            2,
         )
         self.assertEqual(
             application["rules"]["required_status_checks"]["checks"],
-            [{
-                "context": "Pull request / required",
-                "issuer_type": "github_actions",
-                "workflow_path": ".github/workflows/required-check.yml",
-                "triggers": ["pull_request", "merge_group"],
-            }],
+            [
+                {
+                    "context": "Pull request / required",
+                    "issuer_type": "github_actions",
+                    "workflow_path": ".github/workflows/required-check.yml",
+                    "triggers": ["pull_request", "merge_group"],
+                }
+            ],
         )
 
         deployment = catalog["rulesets"]["deployment-source"]
         self.assertEqual(deployment["repositories"], ["gitops"])
         self.assertEqual(
             deployment["rules"]["required_status_checks"]["checks"],
-            [{
-                "context": "Pull request / required",
-                "issuer_type": "github_actions",
-                "workflow_path": ".github/workflows/pull-request.yml",
-                "triggers": ["pull_request", "merge_group"],
-            }],
+            [
+                {
+                    "context": "Pull request / required",
+                    "issuer_type": "github_actions",
+                    "workflow_path": ".github/workflows/pull-request.yml",
+                    "triggers": ["pull_request", "merge_group"],
+                }
+            ],
         )
 
     def test_repository_ruleset_references_resolve(self):
@@ -90,6 +105,7 @@ class RulesetPlanTest(unittest.TestCase):
         repositories = {value["name"] for value in catalog["repositories"].values()}
         for ruleset in catalog["rulesets"].values():
             self.assertLessEqual(set(ruleset["repositories"]), repositories)
+
 
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])

@@ -1,0 +1,5 @@
+.direnv
+build
+node_modules
+result
+target

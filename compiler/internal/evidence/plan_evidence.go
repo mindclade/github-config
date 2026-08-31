@@ -162,14 +162,16 @@ var knownComputedWritePaths = map[string][]string{
 	"github_team_repository": {"/id", "/etag"},
 }
 
-var organizationLoginPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
-var lowercaseHexDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-var gitSHA40Pattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
-var changeIDPattern = regexp.MustCompile(`^change-[0-9]{6}$`)
-var changeReferencePattern = regexp.MustCompile(`^https://github\.com/mindclade/github-config/pull/[1-9][0-9]*$`)
-var kmsKeyVersionPattern = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/github-config-plan-evidence/cryptoKeyVersions/[1-9][0-9]*$`)
-var sensitiveFieldPattern = regexp.MustCompile(`(?i)(^|_)(access[_-]?token|authorization|client[_-]?secret|credential|password|private[_-]?key|secret|token)($|_)`)
-var terraformStringInstanceKeyPattern = regexp.MustCompile(`\["((?:[^"\\]|\\.)*)"\]$`)
+var (
+	organizationLoginPattern          = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
+	lowercaseHexDigestPattern         = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	gitSHA40Pattern                   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	changeIDPattern                   = regexp.MustCompile(`^change-[0-9]{6}$`)
+	changeReferencePattern            = regexp.MustCompile(`^https://github\.com/mindclade/github-config/pull/[1-9][0-9]*$`)
+	kmsKeyVersionPattern              = regexp.MustCompile(`^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]/locations/us-central1/keyRings/bootstrap-signing/cryptoKeys/github-config-plan-evidence/cryptoKeyVersions/[1-9][0-9]*$`)
+	sensitiveFieldPattern             = regexp.MustCompile(`(?i)(^|_)(access[_-]?token|authorization|client[_-]?secret|credential|password|private[_-]?key|secret|token)($|_)`)
+	terraformStringInstanceKeyPattern = regexp.MustCompile(`\["((?:[^"\\]|\\.)*)"\]$`)
+)
 
 // Build emits a value-free receipt bound to the exact plan, catalog, rollout
 // phase, and caller-provided workflow identity fields.
@@ -191,8 +193,8 @@ func Build(
 	var plan map[string]any
 	decoder := json.NewDecoder(strings.NewReader(string(planBytes)))
 	decoder.UseNumber()
-	if err := decoder.Decode(&plan); err != nil {
-		return nil, fmt.Errorf("decode plan JSON: %w", err)
+	if decodeErr := decoder.Decode(&plan); decodeErr != nil {
+		return nil, fmt.Errorf("decode plan JSON: %w", decodeErr)
 	}
 	canonicalPlan, err := rendering.CanonicalJSON(planDigestProjection(plan))
 	if err != nil {
@@ -209,9 +211,9 @@ func Build(
 	}
 	digests["workflow_sources"] = rendering.Digest(canonicalWorkflows)
 	if planFilePath != "" {
-		planFileBytes, err := readRegularFile(planFilePath)
-		if err != nil {
-			return nil, fmt.Errorf("read binary plan: %w", err)
+		planFileBytes, readErr := readRegularFile(planFilePath)
+		if readErr != nil {
+			return nil, fmt.Errorf("read binary plan: %w", readErr)
 		}
 		digests["plan_file"] = rendering.Digest(planFileBytes)
 	}
@@ -224,18 +226,18 @@ func Build(
 	var observedForClassification map[string]any
 	organization := identity["organization"]
 	if catalogPath != "" {
-		catalogBytes, err := readRegularFile(catalogPath)
-		if err != nil {
-			return nil, fmt.Errorf("read catalog: %w", err)
+		catalogBytes, readErr := readRegularFile(catalogPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("read catalog: %w", readErr)
 		}
 		var catalog map[string]any
-		if err := json.Unmarshal(catalogBytes, &catalog); err != nil {
-			return nil, fmt.Errorf("decode catalog: %w", err)
+		if decodeErr := json.Unmarshal(catalogBytes, &catalog); decodeErr != nil {
+			return nil, fmt.Errorf("decode catalog: %w", decodeErr)
 		}
 		catalogForClassification = catalog
-		canonicalCatalog, err := rendering.CanonicalJSON(catalog)
-		if err != nil {
-			return nil, err
+		canonicalCatalog, canonicalErr := rendering.CanonicalJSON(catalog)
+		if canonicalErr != nil {
+			return nil, canonicalErr
 		}
 		catalogDigest := rendering.Digest(canonicalCatalog)
 		if expectedCatalogDigest == "" || catalogDigest != expectedCatalogDigest {
@@ -252,23 +254,23 @@ func Build(
 		}
 	}
 	if observedPath != "" {
-		observedBytes, err := readRegularFile(observedPath)
-		if err != nil {
-			return nil, fmt.Errorf("read observed state: %w", err)
+		observedBytes, readErr := readRegularFile(observedPath)
+		if readErr != nil {
+			return nil, fmt.Errorf("read observed state: %w", readErr)
 		}
 		var observed map[string]any
 		decoder := json.NewDecoder(strings.NewReader(string(observedBytes)))
 		decoder.UseNumber()
-		if err := decoder.Decode(&observed); err != nil {
-			return nil, fmt.Errorf("decode observed state: %w", err)
+		if decodeErr := decoder.Decode(&observed); decodeErr != nil {
+			return nil, fmt.Errorf("decode observed state: %w", decodeErr)
 		}
 		observedForClassification = observed
 		var trailing any
-		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-			if err == nil {
+		if decodeErr := decoder.Decode(&trailing); !errors.Is(decodeErr, io.EOF) {
+			if decodeErr == nil {
 				return nil, errors.New("observed state contains multiple JSON values")
 			}
-			return nil, fmt.Errorf("decode trailing observed state: %w", err)
+			return nil, fmt.Errorf("decode trailing observed state: %w", decodeErr)
 		}
 		coreComplete, _ := observed["core_observation_complete"].(bool)
 		if !coreComplete {
@@ -289,9 +291,9 @@ func Build(
 			return nil, errors.New("observed state omits a positive immutable organization id")
 		}
 		validatedIdentity["organization_id"] = organizationID
-		canonicalObserved, err := rendering.CanonicalJSON(observed)
-		if err != nil {
-			return nil, fmt.Errorf("canonicalize observed state: %w", err)
+		canonicalObserved, canonicalErr := rendering.CanonicalJSON(observed)
+		if canonicalErr != nil {
+			return nil, fmt.Errorf("canonicalize observed state: %w", canonicalErr)
 		}
 		digests["observed_state"] = rendering.Digest(canonicalObserved)
 	}
@@ -346,7 +348,7 @@ func Build(
 	for _, rawChange := range highRisk {
 		change, _ := rawChange.(map[string]any)
 		for _, class := range stringSlice(change["classes"]) {
-			if _, denied := fundamentalClasses[class]; denied && !(founderPublicBootstrap && class == "public_visibility") {
+			if _, denied := fundamentalClasses[class]; denied && (!founderPublicBootstrap || class != "public_visibility") {
 				fundamental = true
 			}
 			if class == "privilege_expansion" {
@@ -860,11 +862,11 @@ func validateDependencyAnalysis(
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.UseNumber()
 	var document map[string]any
-	if err := decoder.Decode(&document); err != nil {
-		return "", fmt.Errorf("decode dependency analysis: %w", err)
+	if decodeErr := decoder.Decode(&document); decodeErr != nil {
+		return "", fmt.Errorf("decode dependency analysis: %w", decodeErr)
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+	if decodeErr := decoder.Decode(&trailing); !errors.Is(decodeErr, io.EOF) {
 		return "", errors.New("dependency analysis must contain exactly one JSON object")
 	}
 	if !exactObjectKeys(document, []string{
@@ -1251,7 +1253,7 @@ func managedChangedFieldsAllowed(resourceType, actionClass string, before, after
 				break
 			}
 		}
-		if !allowed && !(actionClass == "create" && knownComputedUnknownPath(resourceType, path, after, afterUnknown)) {
+		if !allowed && (actionClass != "create" || !knownComputedUnknownPath(resourceType, path, after, afterUnknown)) {
 			return false
 		}
 	}
@@ -2093,7 +2095,7 @@ func governedRetirementAddress(resourceType, address string) bool {
 	if !ok {
 		return false
 	}
-	base := ""
+	var base string
 	switch resourceType {
 	case "github_actions_environment_variable":
 		base = "module.repository_environments.github_actions_environment_variable.this"
@@ -2936,7 +2938,7 @@ func catalogRulesetAfterState(address string, after, catalog, observed map[strin
 	}
 	rules, _ := ruleset["rules"].(map[string]any)
 	creationRestricted := boolMapField(rules, "creation_restricted")
-	if creatorGate && !(stringMapField(ruleset, "target") == "tag" && creationRestricted) {
+	if creatorGate && (stringMapField(ruleset, "target") != "tag" || !creationRestricted) {
 		return false
 	}
 	effectiveName := stringMapField(ruleset, "name")
@@ -4203,7 +4205,9 @@ func readRegularFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close() // A read-only descriptor has no buffered state to preserve.
+	}()
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return nil, err

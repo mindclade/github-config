@@ -1,0 +1,15 @@
+{
+  "recommendations": [
+    "bazelbuild.vscode-bazel",
+    "biomejs.biome",
+    "charliermarsh.ruff",
+    "davidanson.vscode-markdownlint",
+    "editorconfig.editorconfig",
+    "golang.go",
+    "hashicorp.terraform",
+    "jnoortheen.nix-ide",
+    "mkhl.shfmt",
+    "redhat.vscode-yaml",
+    "timonwong.shellcheck"
+  ]
+}

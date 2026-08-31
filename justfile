@@ -3,29 +3,49 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
+format:
+    biome check --write .
+    ruff format .
+    cd compiler && golangci-lint fmt --config ../.golangci.yml
+    opa fmt -w policy
+    tofu fmt -recursive opentofu
+    git ls-files 'BUILD.bazel' 'MODULE.bazel' '*.bzl' | xargs buildifier -mode=fix
+    nixfmt flake.nix
+    just --fmt
+
+format-check:
+    biome check .
+    ruff format --check .
+    cd compiler && golangci-lint fmt --config ../.golangci.yml --diff
+    opa fmt --fail policy >/dev/null
+    tofu fmt -check -recursive opentofu
+    git ls-files 'BUILD.bazel' 'MODULE.bazel' '*.bzl' | xargs buildifier -mode=check -lint=warn
+    nixfmt --check flake.nix
+    just --fmt --check
+
+lint:
+    biome lint .
+    ruff check .
+    pyright
+    cd compiler && golangci-lint run --config ../.golangci.yml ./...
+    actionlint .github/workflows/*.yml
+    yamllint --config-file .yamllint.yaml .
+    markdownlint-cli2
+
 validate:
     cd compiler && go run ./cmd/github-configctl --root .. validate
 
 compile output="build/catalog.json" tofu_vars="":
-    cd compiler && go run ./cmd/github-configctl --root .. compile --output "../{{output}}" {{ if tofu_vars != "" { "--tofu-var-file ../" + tofu_vars } else { "" } }}
+    cd compiler && go run ./cmd/github-configctl --root .. compile --output "../{{ output }}" {{ if tofu_vars != "" { "--tofu-var-file ../" + tofu_vars } else { "" } }}
 
 go-test:
-    cd compiler && test -z "$(gofmt -l .)" && go test -race ./... && go vet ./...
+    cd compiler && go test -race ./...
 
 python-test:
     temporary="$(mktemp -d)"; trap 'rm -rf "$temporary"' EXIT; cd compiler; go build -o "$temporary/github-configctl" ./cmd/github-configctl; cd ..; for test_file in tests/contract/test_*.py tests/plan/test_*.py tests/drift/test_*.py tests/recovery/test_*.py; do GITHUB_CONFIGCTL="$temporary/github-configctl" python3 "$test_file"; done
 
 bazel-test:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(uname -s)" == Darwin ]]; then
-      # Bazel owns its compiler/action environment. Do not leak Nix's Darwin
-      # linker flags into rules_go's separately declared C toolchain.
-      unset NIX_BINTOOLS NIX_CC NIX_CFLAGS_COMPILE NIX_CFLAGS_LINK NIX_LDFLAGS
-      export CC=/usr/bin/clang
-      export CXX=/usr/bin/clang++
-    fi
-    USE_BAZEL_VERSION=9.2.0 bazelisk test //:presubmit --lockfile_mode=off --test_output=errors
+    bazel test --config=ci //:presubmit
 
 policy-test:
     temporary="$(mktemp -d)"; trap 'rm -rf "$temporary"' EXIT; cd compiler; go run ./cmd/github-configctl --root .. policy-input --output "$temporary/policy-input.json"; cd ..; opa test policy; for package in least_privilege protected_rulesets workflow_sources oidc_subjects environment_approvals; do opa eval --fail --data policy --input "$temporary/policy-input.json" "count(data.github_config.$package.deny) == 0" >/dev/null; done
@@ -38,9 +58,14 @@ workflow-lint:
     actionlint .github/workflows/*.yml
 
 bazel-format:
-    buildifier -mode=check BUILD.bazel compiler/BUILD.bazel MODULE.bazel
+    git ls-files 'BUILD.bazel' 'MODULE.bazel' '*.bzl' | xargs buildifier -mode=check -lint=warn
 
 whitespace-check:
     if rg --hidden -n '[[:blank:]]+$' --glob '!.git/**' --glob '!bazel-*' .; then echo 'trailing whitespace is prohibited' >&2; exit 1; fi
 
-ci: go-test python-test bazel-test policy-test tofu-check workflow-lint bazel-format whitespace-check
+flake-check:
+    nix flake check --no-build --no-update-lock-file
+
+check: format-check lint validate go-test python-test bazel-test policy-test tofu-check whitespace-check flake-check
+
+ci: check

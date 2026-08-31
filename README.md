@@ -42,6 +42,11 @@ nix flake check --no-update-lock-file
 nix develop --no-update-lock-file .#ci --command just ci
 ```
 
+The root developer-quality interface is `just format`, `just format-check`,
+`just lint`, and `just check`. Formatting is limited to handwritten source and
+configuration; generated catalogs, observations, plans, state, evidence, and
+receipts remain under their owning commands.
+
 ## Authority boundary
 
 This repository owns organization settings, repositories, teams and access,

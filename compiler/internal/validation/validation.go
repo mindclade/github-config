@@ -19,8 +19,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mindclade/github-config/compiler/internal/rendering"
 	"github.com/santhosh-tekuri/jsonschema/v5"
+
+	"github.com/mindclade/github-config/compiler/internal/rendering"
 )
 
 const APIVersion = "github.mindclade.io/v1"
@@ -66,8 +67,8 @@ func ValidateDocument(schemaPath string, document *Document) error {
 	compiler.Draft = jsonschema.Draft2020
 	compiler.AssertFormat = true
 	resource := "schema://github-config/" + document.Schema
-	if err := compiler.AddResource(resource, bytes.NewReader(schemaBytes)); err != nil {
-		return fmt.Errorf("load schema %s: %w", document.Schema, err)
+	if addErr := compiler.AddResource(resource, bytes.NewReader(schemaBytes)); addErr != nil {
+		return fmt.Errorf("load schema %s: %w", document.Schema, addErr)
 	}
 	schema, err := compiler.Compile(resource)
 	if err != nil {
@@ -2000,21 +2001,6 @@ func requireReferences(path, field string, values []string, available set) error
 	return nil
 }
 
-func membershipEntries(spec any) []map[string]any {
-	if object, ok := spec.(map[string]any); ok {
-		if members, exists := object["organization_members"]; exists {
-			return objectList(members)
-		}
-		if members, exists := object["members"]; exists {
-			return objectList(members)
-		}
-		if collaborators, exists := object["collaborators"]; exists {
-			return objectList(collaborators)
-		}
-	}
-	return objectList(spec)
-}
-
 func validateCustomPropertyMigration(organization map[string]any) error {
 	if organization == nil {
 		return errors.New("organization custom-property migration is missing")
@@ -2538,7 +2524,7 @@ func validSHA256Digest(value string) bool {
 		return false
 	}
 	for _, character := range strings.TrimPrefix(value, "sha256:") {
-		if !(character >= '0' && character <= '9') && !(character >= 'a' && character <= 'f') {
+		if (character < '0' || character > '9') && (character < 'a' || character > 'f') {
 			return false
 		}
 	}

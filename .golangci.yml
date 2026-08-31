@@ -1,0 +1,70 @@
+version: "2"
+
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+  relative-path-mode: gomod
+
+linters:
+  default: standard
+  enable:
+    - asasalint
+    - bidichk
+    - bodyclose
+    - containedctx
+    - contextcheck
+    - durationcheck
+    - errname
+    - errorlint
+    - fatcontext
+    - gocheckcompilerdirectives
+    - gocritic
+    - gosec
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - perfsprint
+    - reassign
+    - recvcheck
+    - rowserrcheck
+    - sqlclosecheck
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+  settings:
+    gocritic:
+      disabled-checks:
+        # Existing validation code uses ordered branches to preserve distinct
+        # error precedence; converting them to switches would obscure it.
+        - ifElseChain
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+  exclusions:
+    generated: strict
+    warn-unused: true
+    rules:
+      - linters:
+          - gosec
+        # Repository CLIs intentionally inspect caller-selected files; each
+        # boundary validates type, size, or repository-relative ownership.
+        text: "G304:"
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/mindclade/github-config/compiler
+  exclusions:
+    generated: strict
+    warn-unused: true
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

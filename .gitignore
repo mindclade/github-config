@@ -3,7 +3,8 @@
 /bazel-github-config
 /bazel-out
 /bazel-testlogs
-/MODULE.bazel.lock
+/result
+/result-*
 
 # OpenTofu working data. State and plans must never be committed.
 **/.terraform/
@@ -27,7 +28,6 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 .idea/
-.vscode/
 
 # Credentials and keys are prohibited even when ignored.
 gha-creds-*.json
@@ -36,3 +36,5 @@ gha-creds-*.json
 *.p12
 .env
 .env.*
+!.vscode/
+!.vscode/*.json

@@ -43,11 +43,11 @@ func main() {
 func run(arguments []string, stdout, stderr io.Writer) int {
 	root, arguments, err := extractRoot(arguments)
 	if err != nil {
-		fmt.Fprintf(stderr, "github-configctl: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "github-configctl: %v\n", err)
 		return 1
 	}
 	if len(arguments) == 0 || arguments[0] == "help" || arguments[0] == "--help" || arguments[0] == "-h" {
-		fmt.Fprint(stdout, usage)
+		_, _ = fmt.Fprint(stdout, usage)
 		if len(arguments) == 0 {
 			return 1
 		}
@@ -73,7 +73,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	case "preflight":
 		return runPreflight(commandArguments, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "github-configctl: unknown command %q\n%s", command, usage)
+		_, _ = fmt.Fprintf(stderr, "github-configctl: unknown command %q\n%s", command, usage)
 		return 1
 	}
 }
@@ -99,7 +99,7 @@ func runPolicyInput(root string, arguments []string, stdout, stderr io.Writer) i
 
 func runValidate(root string, arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) != 0 {
-		fmt.Fprintln(stderr, "github-configctl: validate accepts no command flags")
+		_, _ = fmt.Fprintln(stderr, "github-configctl: validate accepts no command flags")
 		return 1
 	}
 	compiled, err := catalog.Compile(root)
@@ -273,21 +273,21 @@ func runEvidence(root string, arguments []string, stdout, stderr io.Writer) int 
 	}
 	expectedCatalogDigest := ""
 	if *catalogPath != "" {
-		compiledCatalog, err := catalog.Compile(root)
-		if err != nil {
-			return reportError(stderr, fmt.Errorf("compile evidence catalog authority: %w", err))
+		compiledCatalog, compileErr := catalog.Compile(root)
+		if compileErr != nil {
+			return reportError(stderr, fmt.Errorf("compile evidence catalog authority: %w", compileErr))
 		}
-		serializedCatalog, err := json.Marshal(compiledCatalog)
-		if err != nil {
-			return reportError(stderr, err)
+		serializedCatalog, marshalErr := json.Marshal(compiledCatalog)
+		if marshalErr != nil {
+			return reportError(stderr, marshalErr)
 		}
 		var compiledCatalogMap map[string]any
-		if err := json.Unmarshal(serializedCatalog, &compiledCatalogMap); err != nil {
-			return reportError(stderr, err)
+		if unmarshalErr := json.Unmarshal(serializedCatalog, &compiledCatalogMap); unmarshalErr != nil {
+			return reportError(stderr, unmarshalErr)
 		}
-		canonicalCatalog, err := rendering.CanonicalJSON(compiledCatalogMap)
-		if err != nil {
-			return reportError(stderr, err)
+		canonicalCatalog, canonicalErr := rendering.CanonicalJSON(compiledCatalogMap)
+		if canonicalErr != nil {
+			return reportError(stderr, canonicalErr)
 		}
 		expectedCatalogDigest = rendering.Digest(canonicalCatalog)
 	}
@@ -468,11 +468,13 @@ func readJSONPath(path string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close() // A read-only descriptor has no buffered state to preserve.
+	}()
 	return githubdiff.ReadJSON(file)
 }
 
 func reportError(stderr io.Writer, err error) int {
-	fmt.Fprintf(stderr, "github-configctl: %v\n", err)
+	_, _ = fmt.Fprintf(stderr, "github-configctl: %v\n", err)
 	return 1
 }

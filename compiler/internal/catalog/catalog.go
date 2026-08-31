@@ -12,9 +12,10 @@ import (
 	"strconv"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/mindclade/github-config/compiler/internal/rendering"
 	"github.com/mindclade/github-config/compiler/internal/validation"
-	"gopkg.in/yaml.v3"
 )
 
 const maxYAMLBytes = 4 << 20
@@ -614,7 +615,7 @@ func validateComponentMetadata(root string) error {
 		}
 	}
 	for _, field := range []string{"trust_tier", "recovery_tier"} {
-		if text, ok := spec[field].(string); !ok || strings.TrimSpace(text) == "" {
+		if text, fieldOK := spec[field].(string); !fieldOK || strings.TrimSpace(text) == "" {
 			return fmt.Errorf("spec.%s must be a non-empty string", field)
 		}
 	}
@@ -625,7 +626,7 @@ func validateComponentMetadata(root string) error {
 	if !ok || len(reviewers) != 1 || reviewers[0] != "security" {
 		return errors.New("spec.security_reviewers must contain only security")
 	}
-	if dependencies, ok := spec["dependencies"].([]any); !ok || len(dependencies) == 0 {
+	if dependencies, dependenciesOK := spec["dependencies"].([]any); !dependenciesOK || len(dependencies) == 0 {
 		return errors.New("spec.dependencies must be a non-empty list")
 	}
 	release, ok := spec["release"].(map[string]any)
@@ -824,7 +825,9 @@ func decodeYAML(path string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close() // A read-only descriptor has no buffered state to preserve.
+	}()
 	info, err := file.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("inspect YAML: %w", err)

@@ -1,0 +1,24 @@
+{
+  "[json][jsonc]": {
+    "editor.defaultFormatter": "biomejs.biome"
+  },
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff"
+  },
+  "[shellscript]": {
+    "editor.defaultFormatter": "mkhl.shfmt"
+  },
+  "[go]": {
+    "editor.defaultFormatter": "golang.go"
+  },
+  "[terraform][terraform-vars]": {
+    "editor.defaultFormatter": "hashicorp.terraform"
+  },
+  "biome.lsp.bin": "biome",
+  "biome.requireConfiguration": true,
+  "editor.formatOnSave": false,
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "ruff.nativeServer": "on"
+}

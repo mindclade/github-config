@@ -6,10 +6,10 @@
   "additionalProperties": false,
   "required": ["api_version", "kind", "metadata", "spec"],
   "properties": {
-    "api_version": {"const": "github.mindclade.io/v1"},
-    "kind": {"const": "SecurityPolicy"},
-    "metadata": {"$ref": "#/$defs/metadata"},
-    "spec": {"$ref": "#/$defs/spec"}
+    "api_version": { "const": "github.mindclade.io/v1" },
+    "kind": { "const": "SecurityPolicy" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/spec" }
   },
   "$defs": {
     "metadata": {
@@ -17,8 +17,8 @@
       "additionalProperties": false,
       "required": ["id", "owner_team"],
       "properties": {
-        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
-        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+        "owner_team": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" }
       }
     },
     "activation": {
@@ -26,8 +26,12 @@
       "additionalProperties": false,
       "required": ["state", "blockers"],
       "properties": {
-        "state": {"enum": ["ready", "blocked"]},
-        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}}
+        "state": { "enum": ["ready", "blocked"] },
+        "blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]+$" }
+        }
       }
     },
     "spec": {
@@ -47,22 +51,22 @@
         "activation"
       ],
       "properties": {
-        "security_manager_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
-        "dependency_graph_required": {"type": "boolean"},
-        "dependabot_alerts_required": {"type": "boolean"},
-        "dependabot_security_updates_required": {"type": "boolean"},
-        "advanced_security_required": {"type": "boolean"},
-        "code_scanning_default_setup_required": {"type": "boolean"},
-        "secret_scanning_required": {"type": "boolean"},
-        "secret_scanning_push_protection_required": {"type": "boolean"},
-        "private_vulnerability_reporting_required": {"type": "boolean"},
+        "security_manager_team": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+        "dependency_graph_required": { "type": "boolean" },
+        "dependabot_alerts_required": { "type": "boolean" },
+        "dependabot_security_updates_required": { "type": "boolean" },
+        "advanced_security_required": { "type": "boolean" },
+        "code_scanning_default_setup_required": { "type": "boolean" },
+        "secret_scanning_required": { "type": "boolean" },
+        "secret_scanning_push_protection_required": { "type": "boolean" },
+        "private_vulnerability_reporting_required": { "type": "boolean" },
         "required_capabilities": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"enum": ["github-enterprise-cloud", "github-advanced-security"]}
+          "items": { "enum": ["github-enterprise-cloud", "github-advanced-security"] }
         },
-        "activation": {"$ref": "#/$defs/activation"}
+        "activation": { "$ref": "#/$defs/activation" }
       }
     }
   }

@@ -34,8 +34,10 @@ const (
 	readRetryBudget  = 90 * time.Second
 )
 
-var organizationPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
-var driftCredentialFieldPattern = regexp.MustCompile(`(?i)(^|_)(access[_-]?token|authorization|client[_-]?secret|credential|password|private[_-]?key|secret|token)($|_)`)
+var (
+	organizationPattern         = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
+	driftCredentialFieldPattern = regexp.MustCompile(`(?i)(^|_)(access[_-]?token|authorization|client[_-]?secret|credential|password|private[_-]?key|secret|token)($|_)`)
+)
 
 var volatileKeys = map[string]struct{}{
 	"archive_url": {}, "assignees_url": {}, "blobs_url": {}, "branches_url": {},
@@ -202,12 +204,8 @@ func ManagedProjection(catalog map[string]any) map[string]any {
 		projected["direct_collaborators"] = directCollaborators
 		return projected
 	})
-	result["rulesets"] = projectCollection(catalog["rulesets"], func(spec map[string]any) map[string]any {
-		return projectDesiredRuleset(spec)
-	})
-	result["environments"] = projectCollection(catalog["environments"], func(spec map[string]any) map[string]any {
-		return projectDesiredEnvironment(spec)
-	})
+	result["rulesets"] = projectCollection(catalog["rulesets"], projectDesiredRuleset)
+	result["environments"] = projectCollection(catalog["environments"], projectDesiredEnvironment)
 	return result
 }
 
@@ -535,9 +533,9 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		if slug == "" {
 			continue
 		}
-		members, err := client.getList(ctx, "/orgs/"+escapedOrg+"/teams/"+url.PathEscape(slug)+"/members?role=all")
-		if err != nil {
-			return nil, fmt.Errorf("observe members for team %q: %w", slug, err)
+		members, membersErr := client.getList(ctx, "/orgs/"+escapedOrg+"/teams/"+url.PathEscape(slug)+"/members?role=all")
+		if membersErr != nil {
+			return nil, fmt.Errorf("observe members for team %q: %w", slug, membersErr)
 		}
 		projected := make([]any, 0, len(members))
 		for _, member := range objectArrayFromList(members) {
@@ -545,9 +543,9 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 			if login == "" {
 				continue
 			}
-			membership, err := client.getObject(ctx, "/orgs/"+escapedOrg+"/teams/"+url.PathEscape(slug)+"/memberships/"+url.PathEscape(login))
-			if err != nil {
-				return nil, fmt.Errorf("observe membership for team %q login %q: %w", slug, login, err)
+			membership, membershipErr := client.getObject(ctx, "/orgs/"+escapedOrg+"/teams/"+url.PathEscape(slug)+"/memberships/"+url.PathEscape(login))
+			if membershipErr != nil {
+				return nil, fmt.Errorf("observe membership for team %q login %q: %w", slug, login, membershipErr)
 			}
 			role, _ := membership["role"].(string)
 			projected = append(projected, map[string]any{"login": login, "role": role})
@@ -578,10 +576,10 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		if identifier == "" || identifier == "<nil>" {
 			return nil, errors.New("observe organization rulesets: response omitted ruleset id")
 		}
-		detail, err := client.getObject(ctx, "/orgs/"+escapedOrg+"/rulesets/"+url.PathEscape(identifier))
-		if err != nil {
+		detail, detailErr := client.getObject(ctx, "/orgs/"+escapedOrg+"/rulesets/"+url.PathEscape(identifier))
+		if detailErr != nil {
 			rulesetsKnown = false
-			recordCapabilityError("organization_ruleset:"+identifier, err)
+			recordCapabilityError("organization_ruleset:"+identifier, detailErr)
 			continue
 		}
 		rulesetsDetailed = append(rulesetsDetailed, detail)
@@ -936,30 +934,6 @@ func (client *githubClient) getList(ctx context.Context, path string) ([]any, er
 	return nil, fmt.Errorf("pagination exceeded %d pages", maxPages)
 }
 
-func (client *githubClient) getNestedList(ctx context.Context, path, field string) ([]any, error) {
-	result := make([]any, 0)
-	separator := "?"
-	if strings.Contains(path, "?") {
-		separator = "&"
-	}
-	for page := 1; page <= maxPages; page++ {
-		var container map[string]any
-		pagePath := fmt.Sprintf("%s%sper_page=%d&page=%d", path, separator, pageSize, page)
-		if err := client.get(ctx, pagePath, &container); err != nil {
-			return nil, err
-		}
-		values, ok := container[field].([]any)
-		if !ok {
-			return nil, fmt.Errorf("GitHub API response omitted list field %q", field)
-		}
-		result = append(result, values...)
-		if len(values) < pageSize {
-			return result, nil
-		}
-	}
-	return nil, fmt.Errorf("pagination exceeded %d pages", maxPages)
-}
-
 func (client *githubClient) getNestedListWithTotal(ctx context.Context, path, field, totalField string) ([]any, int64, error) {
 	result := make([]any, 0)
 	separator := "?"
@@ -1002,7 +976,9 @@ func (client *githubClient) get(ctx context.Context, path string, destination an
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close() // Response-body close errors cannot affect decoded input.
+	}()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		requestID := response.Header.Get("X-GitHub-Request-Id")
 		return fmt.Errorf("GitHub API returned %s (request_id=%q)", response.Status, requestID)
@@ -1020,7 +996,9 @@ func (client *githubClient) checkEnabled(ctx context.Context, path string) (bool
 	if err != nil {
 		return false, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close() // Response-body close errors cannot affect status inspection.
+	}()
 	switch response.StatusCode {
 	case http.StatusOK, http.StatusNoContent:
 		return true, nil
@@ -1036,7 +1014,9 @@ func (client *githubClient) objectState(ctx context.Context, path, field string,
 	if err != nil {
 		return false, false, err
 	}
-	defer response.Body.Close()
+	defer func() {
+		_ = response.Body.Close() // Response-body close errors cannot affect decoded input.
+	}()
 	if response.StatusCode == http.StatusNotFound {
 		return false, false, nil
 	}
@@ -1123,6 +1103,7 @@ func retryDelay(path string, attempt int, response *http.Response, now time.Time
 		backoff = readRetryMaximum
 	}
 	jitterWindow := backoff / 2
+	// #nosec G115 -- modulo bounds the conversion to the nonnegative duration window.
 	jitter := time.Duration(
 		maphash.String(jitterSeed, path+":"+strconv.Itoa(attempt)) % uint64(jitterWindow+1),
 	)
@@ -1385,6 +1366,7 @@ func observedManagedProjection(
 		case "organization_login":
 			apiKey = "login"
 		case "two_factor_requirement":
+			// #nosec G101 -- this is a GitHub API response field, not a credential.
 			apiKey = "two_factor_requirement_enabled"
 		}
 		setObserved(observedOrganization, key, organizationRaw, apiKey)
@@ -1719,21 +1701,6 @@ func statusEnabledOrUnknown(source map[string]any, key string) any {
 		return unknownValue()
 	}
 	return status == "enabled"
-}
-
-func observedActionPinPolicy(value any) any {
-	patterns, ok := value.([]any)
-	if !ok || len(patterns) == 0 {
-		return unknownValue()
-	}
-	commitPattern := regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+@[0-9a-f]{40}$`)
-	for _, rawPattern := range patterns {
-		pattern, _ := rawPattern.(string)
-		if !commitPattern.MatchString(pattern) {
-			return "unrestricted"
-		}
-	}
-	return "commit_sha"
 }
 
 func projectObservedCustomProperties(values []any) []any {

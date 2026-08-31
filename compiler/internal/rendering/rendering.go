@@ -66,8 +66,8 @@ func WriteJSON(path string, value any, stdout io.Writer) error {
 		return fmt.Errorf("inspect output %q: %w", clean, statErr)
 	}
 	directory := filepath.Dir(clean)
-	if err := os.MkdirAll(directory, 0o755); err != nil {
-		return fmt.Errorf("create output directory: %w", err)
+	if mkdirErr := os.MkdirAll(directory, 0o750); mkdirErr != nil {
+		return fmt.Errorf("create output directory: %w", mkdirErr)
 	}
 	temporary, err := os.CreateTemp(directory, ".github-configctl-*")
 	if err != nil {

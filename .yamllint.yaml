@@ -1,0 +1,19 @@
+extends: default
+
+ignore: |
+  bazel-*/
+  build/
+  rendered/
+  dist/
+
+rules:
+  document-start: disable
+  line-length: disable
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+  comments:
+    min-spaces-from-content: 1
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1

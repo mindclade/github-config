@@ -1,14 +1,14 @@
+# pyright: basic, reportArgumentType=false, reportAttributeAccessIssue=false, reportCallIssue=false, reportOperatorIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false
 import json
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = os.environ.get("GITHUB_CONFIGCTL") or (sys.argv[1] if len(sys.argv) > 1 else "")
@@ -23,8 +23,14 @@ def invoke(*arguments, environment=None):
     env.update(environment or {})
     if env.get("GITHUB_API_URL", "").startswith(("http://127.0.0.1:", "http://localhost:")):
         env.setdefault("MINDCLADE_GITHUB_RETRY_TEST_CLOCK", "advancing")
-    return subprocess.run(command + ["--root", str(ROOT), *arguments], cwd=cwd, env=env, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    return subprocess.run(
+        [*command, "--root", str(ROOT), *arguments],
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 class ObservedStateDiffTest(unittest.TestCase):
@@ -35,16 +41,29 @@ class ObservedStateDiffTest(unittest.TestCase):
 
         def ruleset(value):
             rules = value["rules"]
-            projected = pick(value, [
-                "target", "enforcement", "repositories", "include_refs", "exclude_refs", "bypass_actors",
-            ])
+            projected = pick(
+                value,
+                [
+                    "target",
+                    "enforcement",
+                    "repositories",
+                    "include_refs",
+                    "exclude_refs",
+                    "bypass_actors",
+                ],
+            )
             projected["conditions"] = {
                 "repository_name": {"exclude": [], "protected": True},
             }
             rule_types = [
-                rule_type for rule_type in [
-                    "update", "deletion", "non_fast_forward", "required_linear_history",
-                    "required_signatures", "merge_queue",
+                rule_type
+                for rule_type in [
+                    "update",
+                    "deletion",
+                    "non_fast_forward",
+                    "required_linear_history",
+                    "required_signatures",
+                    "merge_queue",
                 ]
                 if rules.get(rule_type, False)
             ]
@@ -55,31 +74,51 @@ class ObservedStateDiffTest(unittest.TestCase):
             if "required_status_checks" in rules:
                 rule_types.append("required_status_checks")
             projected["rule_types"] = sorted(rule_types)
-            projected_rules = pick(rules, [
-                "update", "deletion", "non_fast_forward", "required_linear_history",
-                "required_signatures", "merge_queue", "creation_restricted",
-                "authorized_creator_integrations",
-            ])
+            projected_rules = pick(
+                rules,
+                [
+                    "update",
+                    "deletion",
+                    "non_fast_forward",
+                    "required_linear_history",
+                    "required_signatures",
+                    "merge_queue",
+                    "creation_restricted",
+                    "authorized_creator_integrations",
+                ],
+            )
             if "pull_request" in rules:
-                projected_rules["pull_request"] = pick(rules["pull_request"], [
-                    "required_approving_review_count", "require_code_owner_review",
-                    "dismiss_stale_reviews", "require_last_push_approval",
-                    "required_review_thread_resolution",
-                ])
+                projected_rules["pull_request"] = pick(
+                    rules["pull_request"],
+                    [
+                        "required_approving_review_count",
+                        "require_code_owner_review",
+                        "dismiss_stale_reviews",
+                        "require_last_push_approval",
+                        "required_review_thread_resolution",
+                    ],
+                )
             if "required_status_checks" in rules:
                 required = rules["required_status_checks"]
                 projected_rules["required_status_checks"] = {
                     "strict": required["strict"],
                     "do_not_enforce_on_create": False,
-                    "checks": [pick(check, ["context", "integration_id"]) for check in required["checks"]],
+                    "checks": [
+                        pick(check, ["context", "integration_id"]) for check in required["checks"]
+                    ],
                 }
             projected["rules"] = projected_rules
             return projected
 
         def environment(value):
-            settings = pick(value, [
-                "prevent_self_review", "can_admins_bypass", "deployment_branch_policy",
-            ])
+            settings = pick(
+                value,
+                [
+                    "prevent_self_review",
+                    "can_admins_bypass",
+                    "deployment_branch_policy",
+                ],
+            )
             settings["deployment_branch_policy"] = {
                 **settings["deployment_branch_policy"],
                 "branch_patterns": settings["deployment_branch_policy"].get("branch_patterns", []),
@@ -89,22 +128,41 @@ class ObservedStateDiffTest(unittest.TestCase):
                 pick(reviewer, ["type", "team"]) for reviewer in value["required_reviewers"]
             ]
             return {
-                "name": value["name"], "repositories": value["repositories"],
-                "repository_settings": {repository: settings for repository in value["repositories"]},
+                "name": value["name"],
+                "repositories": value["repositories"],
+                "repository_settings": dict.fromkeys(value["repositories"], settings),
             }
 
         def repository(value):
             projected = {
-                **pick(value, [
-                    "name", "description", "visibility", "archived", "features",
-                    "merge_policy", "custom_properties",
-                ]),
-                "web_commit_signoff_required": catalog["organization"]["web_commit_signoff_required"],
-                "security": pick(value["security"], [
-                    "vulnerability_alerts", "dependabot_security_updates", "advanced_security",
-                    "secret_scanning", "secret_scanning_push_protection",
-                ]),
-                "team_grants": [pick(grant, ["team", "permission"]) for grant in value["team_grants"]],
+                **pick(
+                    value,
+                    [
+                        "name",
+                        "description",
+                        "visibility",
+                        "archived",
+                        "features",
+                        "merge_policy",
+                        "custom_properties",
+                    ],
+                ),
+                "web_commit_signoff_required": catalog["organization"][
+                    "web_commit_signoff_required"
+                ],
+                "security": pick(
+                    value["security"],
+                    [
+                        "vulnerability_alerts",
+                        "dependabot_security_updates",
+                        "advanced_security",
+                        "secret_scanning",
+                        "secret_scanning_push_protection",
+                    ],
+                ),
+                "team_grants": [
+                    pick(grant, ["team", "permission"]) for grant in value["team_grants"]
+                ],
                 "direct_collaborators": [
                     pick(collaborator, ["login", "permission"])
                     for collaborator in value["direct_collaborators"]
@@ -119,48 +177,81 @@ class ObservedStateDiffTest(unittest.TestCase):
                 projected["actions_access_level"] = value["actions_access_level"]
             return projected
 
-        organization = pick(catalog["organization"], [
-            "organization_login", "default_repository_permission",
-            "members_can_create_repositories", "members_can_create_public_repositories",
-            "members_can_create_private_repositories", "members_can_create_internal_repositories",
-            "members_can_create_pages", "members_can_fork_private_repositories",
-            "web_commit_signoff_required", "two_factor_requirement",
-        ])
+        organization = pick(
+            catalog["organization"],
+            [
+                "organization_login",
+                "default_repository_permission",
+                "members_can_create_repositories",
+                "members_can_create_public_repositories",
+                "members_can_create_private_repositories",
+                "members_can_create_internal_repositories",
+                "members_can_create_pages",
+                "members_can_fork_private_repositories",
+                "web_commit_signoff_required",
+                "two_factor_requirement",
+            ],
+        )
         migration = catalog["organization"]["custom_property_migration"]
         organization["custom_properties"] = []
         for property_definition in catalog["organization"]["custom_properties"]:
             effective = dict(property_definition)
             if migration["phase"] == "preserve":
-                effective["allowed_values"] = sorted(set(
-                    property_definition["allowed_values"]
-                    + migration["legacy_allowed_values"].get(property_definition["name"], [])
-                ))
+                effective["allowed_values"] = sorted(
+                    set(
+                        property_definition["allowed_values"]
+                        + migration["legacy_allowed_values"].get(property_definition["name"], [])
+                    )
+                )
             organization["custom_properties"].append(effective)
 
         return {
             "projection_version": "github-rest/v1",
             "organization": organization,
             "actions_policy": {
-                **pick(catalog["actions_policy"], [
-                "mode", "github_owned_allowed", "verified_creator_allowed",
-                "default_workflow_permissions", "can_approve_pull_request_reviews", "required_pin", "runner_policy",
-                ]),
-                "enabled_repositories": catalog["actions_policy"].get("enabled_repositories", "all"),
+                **pick(
+                    catalog["actions_policy"],
+                    [
+                        "mode",
+                        "github_owned_allowed",
+                        "verified_creator_allowed",
+                        "default_workflow_permissions",
+                        "can_approve_pull_request_reviews",
+                        "required_pin",
+                        "runner_policy",
+                    ],
+                ),
+                "enabled_repositories": catalog["actions_policy"].get(
+                    "enabled_repositories", "all"
+                ),
                 "allowed_patterns": [
-                    f'{action["source"]}@{action["commit"]}'
+                    f"{action['source']}@{action['commit']}"
                     for action in catalog["actions_policy"]["allowed_actions"]
                 ],
             },
-            "security_policy": pick(catalog["security_policy"], [
-                "security_manager_team", "dependency_graph_required", "dependabot_alerts_required",
-                "dependabot_security_updates_required", "advanced_security_required",
-                "code_scanning_default_setup_required", "secret_scanning_required",
-                "secret_scanning_push_protection_required", "private_vulnerability_reporting_required",
-            ]),
+            "security_policy": pick(
+                catalog["security_policy"],
+                [
+                    "security_manager_team",
+                    "dependency_graph_required",
+                    "dependabot_alerts_required",
+                    "dependabot_security_updates_required",
+                    "advanced_security_required",
+                    "code_scanning_default_setup_required",
+                    "secret_scanning_required",
+                    "secret_scanning_push_protection_required",
+                    "private_vulnerability_reporting_required",
+                ],
+            ),
             "oidc_policy": {
-                **pick(catalog["oidc_policy"], [
-                    "use_default_subject", "use_immutable_subject", "include_claim_keys",
-                ]),
+                **pick(
+                    catalog["oidc_policy"],
+                    [
+                        "use_default_subject",
+                        "use_immutable_subject",
+                        "include_claim_keys",
+                    ],
+                ),
                 "repository_subject_templates": {
                     key: {
                         "use_default": False,
@@ -171,7 +262,9 @@ class ObservedStateDiffTest(unittest.TestCase):
                 },
             },
             "members": [pick(member, ["login", "role"]) for member in catalog["members"]],
-            "outside_collaborators": [pick(member, ["login"]) for member in catalog["outside_collaborators"]],
+            "outside_collaborators": [
+                pick(member, ["login"]) for member in catalog["outside_collaborators"]
+            ],
             "teams": {
                 key: {
                     **pick(value, ["name", "description", "privacy", "parent_team"]),
@@ -180,16 +273,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 for key, value in catalog["teams"].items()
             },
             "repositories": {
-                key: repository(value)
-                for key, value in catalog["repositories"].items()
+                key: repository(value) for key, value in catalog["repositories"].items()
             },
-            "rulesets": {
-                key: ruleset(value)
-                for key, value in catalog["rulesets"].items()
-            },
+            "rulesets": {key: ruleset(value) for key, value in catalog["rulesets"].items()},
             "environments": {
-                key: environment(value)
-                for key, value in catalog["environments"].items()
+                key: environment(value) for key, value in catalog["environments"].items()
             },
         }
 
@@ -204,13 +292,24 @@ class ObservedStateDiffTest(unittest.TestCase):
             projection = self.managed_projection(json.loads(desired.read_text()))
             projection["repositories"]["github-config"]["web_commit_signoff_required"] = False
             projection["repositories"]["github-config"]["actions_access_level"] = "organization"
-            projection["organization"]["custom_properties"][0]["values_editable_by"] = "repository_actors"
+            projection["organization"]["custom_properties"][0]["values_editable_by"] = (
+                "repository_actors"
+            )
             observed.write_text(json.dumps({"managed_projection": projection}))
-            result = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            result = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(result.returncode, 2, result.stderr)
             paths = {change["path"] for change in json.loads(report.read_text())["changes"]}
             self.assertIn(
-                "/repositories/github-config/web_commit_signoff_required", paths,
+                "/repositories/github-config/web_commit_signoff_required",
+                paths,
             )
             self.assertIn("/repositories/github-config/actions_access_level", paths)
             self.assertIn("/organization/custom_properties", paths)
@@ -225,8 +324,12 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             projection = self.managed_projection(json.loads(desired.read_text()))
             repository_ids = {
-                "bootstrap", "dot-github", "github-config", "gitops",
-                "infrastructure-live", "mindclade",
+                "bootstrap",
+                "dot-github",
+                "github-config",
+                "gitops",
+                "infrastructure-live",
+                "mindclade",
             }
             self.assertEqual(set(projection["repositories"]), repository_ids)
             public_semantics = {
@@ -238,7 +341,7 @@ class ObservedStateDiffTest(unittest.TestCase):
                     repository_id: projection["repositories"][repository_id]["actions_access_level"]
                     for repository_id in repository_ids
                 },
-                {repository_id: public_semantics for repository_id in repository_ids},
+                dict.fromkeys(repository_ids, public_semantics),
             )
 
             missing_projection = json.loads(json.dumps(projection))
@@ -246,8 +349,13 @@ class ObservedStateDiffTest(unittest.TestCase):
                 del missing_projection["repositories"][repository_id]["actions_access_level"]
             observed.write_text(json.dumps({"managed_projection": missing_projection}))
             missing = invoke(
-                "diff", "--desired", str(desired), "--observed", str(observed),
-                "--output", str(report),
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
             )
             self.assertEqual(missing.returncode, 2, missing.stderr)
             missing_report = json.loads(report.read_text())
@@ -267,18 +375,25 @@ class ObservedStateDiffTest(unittest.TestCase):
             ] = True
             observed.write_text(json.dumps({"managed_projection": extra_projection}))
             extra = invoke(
-                "diff", "--desired", str(desired), "--observed", str(observed),
-                "--output", str(report),
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
             )
             self.assertEqual(extra.returncode, 2, extra.stderr)
             extra_report = json.loads(report.read_text())
             self.assertEqual(extra_report["summary"]["extra"], 1)
             self.assertEqual(
                 {(change["kind"], change["path"]) for change in extra_report["changes"]},
-                {(
-                    "extra",
-                    "/repositories/github-config/actions_access_level/undeclared_actions_control",
-                )},
+                {
+                    (
+                        "extra",
+                        "/repositories/github-config/actions_access_level/undeclared_actions_control",
+                    )
+                },
             )
 
     def test_provider_required_repository_defaults_are_managed(self):
@@ -295,14 +410,25 @@ class ObservedStateDiffTest(unittest.TestCase):
             repository["merge_policy"]["squash_merge_commit_title"] = "COMMIT_OR_PR_TITLE"
             repository["merge_policy"]["squash_merge_commit_message"] = "BLANK"
             observed.write_text(json.dumps({"managed_projection": projection}))
-            result = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            result = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(result.returncode, 2, result.stderr)
             paths = {change["path"] for change in json.loads(report.read_text())["changes"]}
-            self.assertEqual(paths, {
-                "/repositories/github-config/features/downloads",
-                "/repositories/github-config/merge_policy/squash_merge_commit_message",
-                "/repositories/github-config/merge_policy/squash_merge_commit_title",
-            })
+            self.assertEqual(
+                paths,
+                {
+                    "/repositories/github-config/features/downloads",
+                    "/repositories/github-config/merge_policy/squash_merge_commit_message",
+                    "/repositories/github-config/merge_policy/squash_merge_commit_title",
+                },
+            )
 
     def test_provider_fixed_ruleset_controls_are_managed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -319,15 +445,26 @@ class ObservedStateDiffTest(unittest.TestCase):
             ruleset["rules"]["required_status_checks"]["do_not_enforce_on_create"] = True
             ruleset["rule_types"].append("unexpected_rule")
             observed.write_text(json.dumps({"managed_projection": projection}))
-            result = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            result = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(result.returncode, 2, result.stderr)
             paths = {change["path"] for change in json.loads(report.read_text())["changes"]}
-            self.assertEqual(paths, {
-                "/rulesets/application-source/conditions/repository_name/exclude",
-                "/rulesets/application-source/conditions/repository_name/protected",
-                "/rulesets/application-source/rule_types",
-                "/rulesets/application-source/rules/required_status_checks/do_not_enforce_on_create",
-            })
+            self.assertEqual(
+                paths,
+                {
+                    "/rulesets/application-source/conditions/repository_name/exclude",
+                    "/rulesets/application-source/conditions/repository_name/protected",
+                    "/rulesets/application-source/rule_types",
+                    "/rulesets/application-source/rules/required_status_checks/do_not_enforce_on_create",
+                },
+            )
 
     def test_explicit_managed_projection_converges_and_unknown_fails_closed(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -339,14 +476,34 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             catalog = json.loads(desired.read_text())
             projection = self.managed_projection(catalog)
-            observed.write_text(json.dumps({"kind": "GitHubObservedState", "managed_projection": projection}))
-            clean = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            observed.write_text(
+                json.dumps({"kind": "GitHubObservedState", "managed_projection": projection})
+            )
+            clean = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(clean.returncode, 0, clean.stderr)
             self.assertEqual(json.loads(report.read_text())["status"], "clean")
 
             projection["repositories"]["github-config"] = {"status": "unknown"}
-            observed.write_text(json.dumps({"kind": "GitHubObservedState", "managed_projection": projection}))
-            unknown = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            observed.write_text(
+                json.dumps({"kind": "GitHubObservedState", "managed_projection": projection})
+            )
+            unknown = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(unknown.returncode, 2, unknown.stderr)
             self.assertEqual(json.loads(report.read_text())["summary"]["unknown"], 1)
 
@@ -360,17 +517,31 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             projection = self.managed_projection(json.loads(desired.read_text()))
             repository_id = sorted(projection["oidc_policy"]["repository_subject_templates"])[0]
-            projection["oidc_policy"]["repository_subject_templates"][repository_id]["use_default"] = True
-            projection["oidc_policy"]["repository_subject_templates"][repository_id]["use_immutable_subject"] = False
+            projection["oidc_policy"]["repository_subject_templates"][repository_id][
+                "use_default"
+            ] = True
+            projection["oidc_policy"]["repository_subject_templates"][repository_id][
+                "use_immutable_subject"
+            ] = False
             observed.write_text(json.dumps({"managed_projection": projection}))
-            result = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            result = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(result.returncode, 2, result.stderr)
             paths = {change["path"] for change in json.loads(report.read_text())["changes"]}
             self.assertIn(
-                f"/oidc_policy/repository_subject_templates/{repository_id}/use_default", paths,
+                f"/oidc_policy/repository_subject_templates/{repository_id}/use_default",
+                paths,
             )
             self.assertIn(
-                f"/oidc_policy/repository_subject_templates/{repository_id}/use_immutable_subject", paths,
+                f"/oidc_policy/repository_subject_templates/{repository_id}/use_immutable_subject",
+                paths,
             )
 
     def test_closed_world_collections_report_undeclared_live_objects(self):
@@ -387,7 +558,15 @@ class ObservedStateDiffTest(unittest.TestCase):
             projection["rulesets"]["rogue-ruleset"] = {"target": "branch"}
             projection["environments"]["rogue-environment"] = {"name": "rogue-environment"}
             observed.write_text(json.dumps({"managed_projection": projection}))
-            result = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            result = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(result.returncode, 2, result.stderr)
             payload = json.loads(report.read_text())
             self.assertEqual(payload["summary"]["extra"], 4)
@@ -402,7 +581,15 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             observed.write_bytes(desired.read_bytes())
 
-            clean = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            clean = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(clean.returncode, 0, clean.stderr)
             self.assertEqual(json.loads(report.read_text())["status"], "clean")
 
@@ -410,11 +597,21 @@ class ObservedStateDiffTest(unittest.TestCase):
             state["organization"]["default_repository_permission"] = "read"
             state["observed_at"] = "volatile-and-ignored"
             observed.write_text(json.dumps(state))
-            drift = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            drift = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(drift.returncode, 2, drift.stderr)
             payload = json.loads(report.read_text())
             self.assertEqual(payload["summary"]["changed"], 1)
-            self.assertEqual(payload["changes"][0]["path"], "/organization/default_repository_permission")
+            self.assertEqual(
+                payload["changes"][0]["path"], "/organization/default_repository_permission"
+            )
             self.assertFalse(payload["changes"][0]["sensitive"])
             self.assertRegex(payload["changes"][0]["desired_hash"], r"^sha256:[0-9a-f]{64}$")
             self.assertRegex(payload["changes"][0]["observed_hash"], r"^sha256:[0-9a-f]{64}$")
@@ -424,7 +621,15 @@ class ObservedStateDiffTest(unittest.TestCase):
             state = json.loads(desired.read_text())
             state["repositories"]["github-config"] = {"status": "unknown"}
             observed.write_text(json.dumps(state))
-            unknown = invoke("diff", "--desired", str(desired), "--observed", str(observed), "--output", str(report))
+            unknown = invoke(
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(report),
+            )
             self.assertEqual(unknown.returncode, 2, unknown.stderr)
             self.assertEqual(json.loads(report.read_text())["summary"]["unknown"], 1)
 
@@ -433,15 +638,22 @@ class ObservedStateDiffTest(unittest.TestCase):
             directory = Path(temporary)
             desired = directory / "desired.json"
             observed = directory / "observed.json"
-            desired.write_text(json.dumps({"credential": {"access_token": "ghp_abcdefghijklmnopqrstuvwxyz123456"}}))
+            desired.write_text(
+                json.dumps({"credential": {"access_token": "ghp_abcdefghijklmnopqrstuvwxyz123456"}})
+            )
             observed.write_text(json.dumps({"credential": {"access_token": "changed"}}))
             result = invoke("diff", "--desired", str(desired), "--observed", str(observed))
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertNotIn("ghp_", result.stdout)
             change = json.loads(result.stdout)["changes"][0]
-            self.assertEqual(change, {
-                "kind": "changed", "path": "/credential/access_token", "sensitive": True,
-            })
+            self.assertEqual(
+                change,
+                {
+                    "kind": "changed",
+                    "path": "/credential/access_token",
+                    "sensitive": True,
+                },
+            )
 
     def test_drift_report_never_serializes_identity_or_restricted_property_values(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -473,14 +685,21 @@ class ObservedStateDiffTest(unittest.TestCase):
             desired.write_text(json.dumps(desired_value, sort_keys=True))
             observed.write_text(json.dumps(observed_value, sort_keys=True))
             result = invoke(
-                "diff", "--desired", str(desired), "--observed", str(observed),
-                "--output", str(first),
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(first),
             )
             self.assertEqual(result.returncode, 2, result.stderr)
             report_text = first.read_text()
             for forbidden in [
-                "member-login-must-not-appear", "other-login-must-not-appear",
-                "restricted-repository-must-not-appear", "restricted-value-must-not-appear",
+                "member-login-must-not-appear",
+                "other-login-must-not-appear",
+                "restricted-repository-must-not-appear",
+                "restricted-value-must-not-appear",
                 "confidential-value-must-not-appear",
             ]:
                 self.assertNotIn(forbidden, report_text)
@@ -496,15 +715,24 @@ class ObservedStateDiffTest(unittest.TestCase):
             desired.write_text(json.dumps(desired_value, indent=4))
             observed.write_text(json.dumps(observed_value, separators=(",", ":")))
             result = invoke(
-                "diff", "--desired", str(desired), "--observed", str(observed),
-                "--output", str(second),
+                "diff",
+                "--desired",
+                str(desired),
+                "--observed",
+                str(observed),
+                "--output",
+                str(second),
             )
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertEqual(first.read_bytes(), second.read_bytes())
 
     def test_observer_restricts_token_origin_and_rejects_redirects(self):
         rejected = invoke(
-            "observe", "--organization", "mindclade", "--output", "-",
+            "observe",
+            "--organization",
+            "mindclade",
+            "--output",
+            "-",
             environment={
                 "GITHUB_TOKEN": "must-not-leak",
                 "GITHUB_API_URL": "https://example.invalid",
@@ -524,14 +752,15 @@ class ObservedStateDiffTest(unittest.TestCase):
                 requests.append(self.path)
                 if self.path == "/token-sink":
                     self.send_response(200)
-                    payload = b'{}'
+                    payload = b"{}"
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
                     self.wfile.write(payload)
                     return
                 self.send_response(302)
                 self.send_header(
-                    "Location", f"http://127.0.0.1:{self.server.server_port}/token-sink",
+                    "Location",
+                    f"http://127.0.0.1:{self.server.server_port}/token-sink",
                 )
                 self.end_headers()
 
@@ -540,7 +769,11 @@ class ObservedStateDiffTest(unittest.TestCase):
         thread.start()
         try:
             redirected = invoke(
-                "observe", "--organization", "mindclade", "--output", "-",
+                "observe",
+                "--organization",
+                "mindclade",
+                "--output",
+                "-",
                 environment={
                     "GITHUB_TOKEN": "must-not-leak",
                     "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -575,7 +808,8 @@ class ObservedStateDiffTest(unittest.TestCase):
                 ):
                     self.send_response(429)
                     self.send_header(
-                        "Retry-After", str(self.server.retry_after_seconds.get(path, 0)),
+                        "Retry-After",
+                        str(self.server.retry_after_seconds.get(path, 0)),
                     )
                     self.send_header("X-GitHub-Request-Id", f"retry-{attempt}")
                     self.end_headers()
@@ -584,23 +818,32 @@ class ObservedStateDiffTest(unittest.TestCase):
                 list_paths = {
                     "/orgs/mindclade/properties/schema",
                     "/orgs/mindclade/organization-roles/77/teams",
-                    "/orgs/mindclade/teams", "/orgs/mindclade/members",
-                    "/orgs/mindclade/outside_collaborators", "/orgs/mindclade/rulesets",
+                    "/orgs/mindclade/teams",
+                    "/orgs/mindclade/members",
+                    "/orgs/mindclade/outside_collaborators",
+                    "/orgs/mindclade/rulesets",
                     "/repos/mindclade/github-config/teams",
                     "/repos/mindclade/github-config/collaborators",
                     "/repos/mindclade/github-config/properties/values",
                 }
                 if path == "/orgs/mindclade":
                     value = {
-                        "id": 1, "login": "mindclade", "plan": {"name": "enterprise"},
-                        "public_repos": 0, "total_private_repos": 2,
+                        "id": 1,
+                        "login": "mindclade",
+                        "plan": {"name": "enterprise"},
+                        "public_repos": 0,
+                        "total_private_repos": 2,
                     }
                 elif path == "/orgs/mindclade/properties/schema":
-                    value = [{
-                        "property_name": "repository_class", "value_type": "single_select",
-                        "required": True, "allowed_values": ["governance-source"],
-                        "values_editable_by": "org_actors",
-                    }]
+                    value = [
+                        {
+                            "property_name": "repository_class",
+                            "value_type": "single_select",
+                            "required": True,
+                            "allowed_values": ["governance-source"],
+                            "values_editable_by": "org_actors",
+                        }
+                    ]
                 elif path == "/orgs/mindclade/rulesets":
                     value = [{"id": 99, "name": "application-source"}]
                     if self.server.organization_rulesets_duplicate:
@@ -608,33 +851,52 @@ class ObservedStateDiffTest(unittest.TestCase):
                 elif path in ("/orgs/mindclade/rulesets/99", "/orgs/mindclade/rulesets/100"):
                     value = {
                         "id": int(path.rsplit("/", 1)[1]),
-                        "name": "application-source", "target": "branch",
-                        "enforcement": "active", "bypass_actors": [],
+                        "name": "application-source",
+                        "target": "branch",
+                        "enforcement": "active",
+                        "bypass_actors": [],
                         "conditions": {
                             "repository_name": {
-                                "include": ["mindclade"], "exclude": [], "protected": True,
+                                "include": ["mindclade"],
+                                "exclude": [],
+                                "protected": True,
                             },
                             "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []},
                         },
-                        "rules": [{
-                            "type": "required_status_checks",
-                            "parameters": {
-                                "strict_required_status_checks_policy": True,
-                                "do_not_enforce_on_create": False,
-                                "required_status_checks": [{"context": "Pull request / required"}],
-                            },
-                        }],
+                        "rules": [
+                            {
+                                "type": "required_status_checks",
+                                "parameters": {
+                                    "strict_required_status_checks_policy": True,
+                                    "do_not_enforce_on_create": False,
+                                    "required_status_checks": [
+                                        {"context": "Pull request / required"}
+                                    ],
+                                },
+                            }
+                        ],
                     }
                 elif path in list_paths:
                     value = []
                 elif path == "/orgs/mindclade/organization-roles":
                     value = {"roles": [{"id": 77, "name": "security_manager"}]}
                 elif path == "/orgs/mindclade/actions/permissions":
-                    value = {"enabled_repositories": "all", "allowed_actions": "selected", "sha_pinning_required": False}
+                    value = {
+                        "enabled_repositories": "all",
+                        "allowed_actions": "selected",
+                        "sha_pinning_required": False,
+                    }
                 elif path == "/orgs/mindclade/actions/permissions/selected-actions":
-                    value = {"github_owned_allowed": False, "verified_allowed": False, "patterns_allowed": []}
+                    value = {
+                        "github_owned_allowed": False,
+                        "verified_allowed": False,
+                        "patterns_allowed": [],
+                    }
                 elif path == "/orgs/mindclade/actions/permissions/workflow":
-                    value = {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False}
+                    value = {
+                        "default_workflow_permissions": "read",
+                        "can_approve_pull_request_reviews": False,
+                    }
                 elif path == "/orgs/mindclade/actions/runners":
                     value = {"total_count": 0, "runners": []}
                 elif path == "/orgs/mindclade/actions/permissions/self-hosted-runners":
@@ -649,7 +911,9 @@ class ObservedStateDiffTest(unittest.TestCase):
                 elif path == "/orgs/mindclade/repos":
                     value = [
                         {
-                            "id": 2, "name": "github-config", "visibility": self.server.github_config_visibility,
+                            "id": 2,
+                            "name": "github-config",
+                            "visibility": self.server.github_config_visibility,
                             "web_commit_signoff_required": True,
                             "has_downloads": False,
                             "squash_merge_commit_title": "PR_TITLE",
@@ -664,13 +928,17 @@ class ObservedStateDiffTest(unittest.TestCase):
                     ]
                 elif path == "/orgs/mindclade/installations":
                     value = {"total_count": 0, "installations": []}
-                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/oidc/customization/sub"):
+                elif path.startswith("/repos/mindclade/") and path.endswith(
+                    "/actions/oidc/customization/sub"
+                ):
                     value = {
                         "use_default": False,
                         "include_claim_keys": ["repo", "context", "workflow_ref", "workflow_sha"],
                         "use_immutable_subject": True,
                     }
-                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/permissions/access"):
+                elif path.startswith("/repos/mindclade/") and path.endswith(
+                    "/actions/permissions/access"
+                ):
                     value = {"access_level": "none"}
                 elif path == "/repos/mindclade/github-config/environments":
                     value = {"total_count": 0, "environments": []}
@@ -679,14 +947,21 @@ class ObservedStateDiffTest(unittest.TestCase):
                         "name": "infrastructure-apply",
                         "can_admins_bypass": False,
                         "deployment_branch_policy": {
-                            "protected_branches": False, "custom_branch_policies": True,
+                            "protected_branches": False,
+                            "custom_branch_policies": True,
                         },
-                        "protection_rules": [{
-                            "type": "required_reviewers", "prevent_self_review": True,
-                            "reviewers": [{
-                                "type": "Team", "reviewer": {"slug": "security"},
-                            }],
-                        }],
+                        "protection_rules": [
+                            {
+                                "type": "required_reviewers",
+                                "prevent_self_review": True,
+                                "reviewers": [
+                                    {
+                                        "type": "Team",
+                                        "reviewer": {"slug": "security"},
+                                    }
+                                ],
+                            }
+                        ],
                     }
                     if self.server.environment_inventory_case == "paginated":
                         page = int(query.get("page", ["1"])[0])
@@ -695,24 +970,31 @@ class ObservedStateDiffTest(unittest.TestCase):
                                 {
                                     "name": f"extra-{index:03d}",
                                     "deployment_branch_policy": {
-                                        "protected_branches": True, "custom_branch_policies": False,
+                                        "protected_branches": True,
+                                        "custom_branch_policies": False,
                                     },
                                 }
                                 for index in range(99)
                             ]
                         else:
-                            environments_page = [{
-                                "name": "extra-100",
-                                "deployment_branch_policy": {
-                                    "protected_branches": True, "custom_branch_policies": False,
-                                },
-                            }]
+                            environments_page = [
+                                {
+                                    "name": "extra-100",
+                                    "deployment_branch_policy": {
+                                        "protected_branches": True,
+                                        "custom_branch_policies": False,
+                                    },
+                                }
+                            ]
                         value = {"total_count": 101, "environments": environments_page}
                     elif self.server.environment_inventory_case == "count_mismatch":
                         value = {"total_count": 2, "environments": [primary_environment]}
                     else:
                         value = {"total_count": 1, "environments": [primary_environment]}
-                elif path == "/repos/mindclade/infrastructure-live/environments/infrastructure-apply/deployment-branch-policies":
+                elif (
+                    path
+                    == "/repos/mindclade/infrastructure-live/environments/infrastructure-apply/deployment-branch-policies"
+                ):
                     if self.server.environment_policy_readable:
                         value = {
                             "total_count": self.server.environment_policy_total_count,
@@ -724,11 +1006,22 @@ class ObservedStateDiffTest(unittest.TestCase):
                         }
                     else:
                         status, value = 500, {"message": "deployment policies unavailable"}
-                elif path.startswith("/repos/mindclade/") and path.endswith((
-                    "/teams", "/collaborators", "/properties/values",
-                )):
+                elif path.startswith("/repos/mindclade/") and path.endswith(
+                    (
+                        "/teams",
+                        "/collaborators",
+                        "/properties/values",
+                    )
+                ):
                     value = []
-                elif path.endswith(("/vulnerability-alerts", "/dependency-graph/sbom", "/automated-security-fixes", "/private-vulnerability-reporting")):
+                elif path.endswith(
+                    (
+                        "/vulnerability-alerts",
+                        "/dependency-graph/sbom",
+                        "/automated-security-fixes",
+                        "/private-vulnerability-reporting",
+                    )
+                ):
                     status, value = 204, None
                 elif path.endswith("/code-scanning/default-setup"):
                     value = {"state": "configured"}
@@ -764,7 +1057,11 @@ class ObservedStateDiffTest(unittest.TestCase):
             with tempfile.TemporaryDirectory() as temporary:
                 output = Path(temporary) / "observed.json"
                 result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -774,7 +1071,7 @@ class ObservedStateDiffTest(unittest.TestCase):
                 observed = json.loads(output.read_text())
                 self.assertEqual(
                     {path: server.retry_counts[path] for path in server.retry_once},
-                    {path: 2 for path in server.retry_once},
+                    dict.fromkeys(server.retry_once, 2),
                 )
                 server.retry_once = set()
                 persistent_path = "/repos/mindclade/github-config/dependency-graph/sbom"
@@ -782,7 +1079,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.retry_always = {persistent_path}
                 bounded_output = Path(temporary) / "observed-bounded-retry.json"
                 bounded_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(bounded_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(bounded_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -802,7 +1103,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.retry_after_seconds[persistent_path] = 20
                 recovered_output = Path(temporary) / "observed-rate-limit-recovered.json"
                 recovered_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(recovered_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(recovered_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -821,7 +1126,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.retry_always = {persistent_path}
                 instructed_output = Path(temporary) / "observed-retry-after.json"
                 instructed_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(instructed_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(instructed_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -834,7 +1143,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.environment_policy_readable = False
                 unreadable_output = Path(temporary) / "observed-unreadable-policy.json"
                 unreadable_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(unreadable_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(unreadable_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -846,7 +1159,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.environment_policy_total_count = 4
                 incomplete_output = Path(temporary) / "observed-incomplete-policy.json"
                 incomplete_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(incomplete_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(incomplete_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -858,7 +1175,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.environment_inventory_case = "paginated"
                 paginated_output = Path(temporary) / "observed-paginated-environments.json"
                 paginated_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(paginated_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(paginated_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -869,7 +1190,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.environment_inventory_case = "count_mismatch"
                 mismatched_output = Path(temporary) / "observed-mismatched-environments.json"
                 mismatched_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(mismatched_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(mismatched_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -882,7 +1207,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.github_config_visibility = "public"
                 public_output = Path(temporary) / "observed-public-migration.json"
                 public_result = invoke(
-                    "observe", "--organization", "mindclade", "--output", str(public_output),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(public_output),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -894,8 +1223,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                 server.github_config_visibility = "private"
                 server.organization_rulesets_duplicate = True
                 duplicate_organization_result = invoke(
-                    "observe", "--organization", "mindclade",
-                    "--output", str(Path(temporary) / "duplicate-organization-ruleset.json"),
+                    "observe",
+                    "--organization",
+                    "mindclade",
+                    "--output",
+                    str(Path(temporary) / "duplicate-organization-ruleset.json"),
                     environment={
                         "GITHUB_TOKEN": "fixture-token",
                         "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -909,8 +1241,13 @@ class ObservedStateDiffTest(unittest.TestCase):
                 compiled = invoke("compile", "--output", str(desired_output))
                 self.assertEqual(compiled.returncode, 0, compiled.stderr)
                 drift = invoke(
-                    "diff", "--desired", str(desired_output), "--observed", str(unreadable_output),
-                    "--output", str(drift_output),
+                    "diff",
+                    "--desired",
+                    str(desired_output),
+                    "--observed",
+                    str(unreadable_output),
+                    "--output",
+                    str(drift_output),
                 )
                 self.assertEqual(drift.returncode, 2, drift.stderr)
                 unreadable_drift = json.loads(drift_output.read_text())
@@ -918,32 +1255,46 @@ class ObservedStateDiffTest(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=5)
             server.server_close()
-        repository_oidc = observed["managed_projection"]["oidc_policy"]["repository_subject_templates"]["github-config"]
+        repository_oidc = observed["managed_projection"]["oidc_policy"][
+            "repository_subject_templates"
+        ]["github-config"]
         self.assertFalse(repository_oidc["use_default"])
         self.assertTrue(repository_oidc["use_immutable_subject"])
-        repository_security = observed["managed_projection"]["repositories"]["github-config"]["security"]
+        repository_security = observed["managed_projection"]["repositories"]["github-config"][
+            "security"
+        ]
         self.assertTrue(repository_security["secret_scanning"])
         self.assertTrue(repository_security["secret_scanning_push_protection"])
         self.assertTrue(
-            observed["managed_projection"]["repositories"]["github-config"]["web_commit_signoff_required"],
+            observed["managed_projection"]["repositories"]["github-config"][
+                "web_commit_signoff_required"
+            ],
         )
         self.assertEqual(
             observed["managed_projection"]["repositories"]["github-config"]["actions_access_level"],
             "none",
         )
         self.assertFalse(
-            observed["managed_projection"]["repositories"]["github-config"]["features"]["downloads"],
+            observed["managed_projection"]["repositories"]["github-config"]["features"][
+                "downloads"
+            ],
         )
         self.assertEqual(
-            observed["managed_projection"]["repositories"]["github-config"]["merge_policy"]["squash_merge_commit_title"],
+            observed["managed_projection"]["repositories"]["github-config"]["merge_policy"][
+                "squash_merge_commit_title"
+            ],
             "PR_TITLE",
         )
         self.assertEqual(
-            observed["managed_projection"]["repositories"]["github-config"]["merge_policy"]["squash_merge_commit_message"],
+            observed["managed_projection"]["repositories"]["github-config"]["merge_policy"][
+                "squash_merge_commit_message"
+            ],
             "PR_BODY",
         )
         self.assertEqual(
-            observed["managed_projection"]["organization"]["custom_properties"][0]["values_editable_by"],
+            observed["managed_projection"]["organization"]["custom_properties"][0][
+                "values_editable_by"
+            ],
             "org_actors",
         )
         observed_ruleset = observed["managed_projection"]["rulesets"]["application-source"]
@@ -983,8 +1334,12 @@ class ObservedStateDiffTest(unittest.TestCase):
             "repository_environments:infrastructure-live",
             {error["section"] for error in mismatched_observed["errors"]},
         )
-        self.assertNotIn("/repos/mindclade/github-config/actions/permissions/access", public_requests)
-        self.assertIn("/repos/mindclade/github-config/private-vulnerability-reporting", public_requests)
+        self.assertNotIn(
+            "/repos/mindclade/github-config/actions/permissions/access", public_requests
+        )
+        self.assertIn(
+            "/repos/mindclade/github-config/private-vulnerability-reporting", public_requests
+        )
         self.assertNotIn(
             "repository_actions_access:github-config",
             {error["section"] for error in public_observed["errors"]},
@@ -1010,8 +1365,12 @@ class ObservedStateDiffTest(unittest.TestCase):
             ],
         )
         self.assertEqual(observed["managed_projection"]["actions_policy"]["mode"], "selected")
-        self.assertEqual(observed["managed_projection"]["actions_policy"]["enabled_repositories"], "all")
-        self.assertEqual(observed["managed_projection"]["actions_policy"]["required_pin"], "unrestricted")
+        self.assertEqual(
+            observed["managed_projection"]["actions_policy"]["enabled_repositories"], "all"
+        )
+        self.assertEqual(
+            observed["managed_projection"]["actions_policy"]["required_pin"], "unrestricted"
+        )
         self.assertTrue(observed["repository_inventory_complete"])
         self.assertTrue(observed["core_observation_complete"])
         self.assertTrue(observed["installation_inventory"]["api_inventory_complete"])
@@ -1028,7 +1387,12 @@ class ObservedStateDiffTest(unittest.TestCase):
 
     def test_repository_inventory_requires_authoritative_organization_totals(self):
         repository_names = [
-            ".github", "github-config", "bootstrap", "infrastructure-live", "gitops", "mindclade",
+            ".github",
+            "github-config",
+            "bootstrap",
+            "infrastructure-live",
+            "gitops",
+            "mindclade",
         ]
 
         class Handler(BaseHTTPRequestHandler):
@@ -1054,13 +1418,21 @@ class ObservedStateDiffTest(unittest.TestCase):
                     value = {"roles": [{"id": 77, "name": "security_manager"}]}
                 elif path == "/orgs/mindclade/actions/permissions":
                     value = {
-                        "enabled_repositories": "all", "allowed_actions": "selected",
+                        "enabled_repositories": "all",
+                        "allowed_actions": "selected",
                         "sha_pinning_required": True,
                     }
                 elif path == "/orgs/mindclade/actions/permissions/selected-actions":
-                    value = {"github_owned_allowed": False, "verified_allowed": False, "patterns_allowed": []}
+                    value = {
+                        "github_owned_allowed": False,
+                        "verified_allowed": False,
+                        "patterns_allowed": [],
+                    }
                 elif path == "/orgs/mindclade/actions/permissions/workflow":
-                    value = {"default_workflow_permissions": "read", "can_approve_pull_request_reviews": False}
+                    value = {
+                        "default_workflow_permissions": "read",
+                        "can_approve_pull_request_reviews": False,
+                    }
                 elif path == "/orgs/mindclade/actions/runners":
                     value = {"total_count": 0, "runners": []}
                 elif path == "/orgs/mindclade/actions/permissions/self-hosted-runners":
@@ -1075,29 +1447,59 @@ class ObservedStateDiffTest(unittest.TestCase):
                 elif path == "/orgs/mindclade/installations":
                     installation_case = self.server.installation_case
                     if installation_case == "extra":
-                        value = {"total_count": 1, "installations": [{
-                            "id": 900, "app_id": 901, "app_slug": "rogue-app",
-                            "repository_selection": "selected", "permissions": {}, "events": [],
-                            "suspended_at": None,
-                        }]}
+                        value = {
+                            "total_count": 1,
+                            "installations": [
+                                {
+                                    "id": 900,
+                                    "app_id": 901,
+                                    "app_slug": "rogue-app",
+                                    "repository_selection": "selected",
+                                    "permissions": {},
+                                    "events": [],
+                                    "suspended_at": None,
+                                }
+                            ],
+                        }
                     elif installation_case == "count_mismatch":
-                        value = {"total_count": 2, "installations": [{
-                            "id": 900, "app_id": 901, "app_slug": "rogue-app",
-                            "repository_selection": "selected", "permissions": {}, "events": [],
-                            "suspended_at": None,
-                        }]}
+                        value = {
+                            "total_count": 2,
+                            "installations": [
+                                {
+                                    "id": 900,
+                                    "app_id": 901,
+                                    "app_slug": "rogue-app",
+                                    "repository_selection": "selected",
+                                    "permissions": {},
+                                    "events": [],
+                                    "suspended_at": None,
+                                }
+                            ],
+                        }
                     elif installation_case == "missing_page":
                         if query.get("page") == ["2"]:
                             status, value = 500, {"message": "missing page"}
                         else:
-                            value = {"total_count": 101, "installations": [{
-                                "id": 1000 + index, "app_id": 2000 + index,
-                                "app_slug": f"app-{index}", "repository_selection": "selected",
-                                "permissions": {}, "events": [], "suspended_at": None,
-                            } for index in range(100)]}
+                            value = {
+                                "total_count": 101,
+                                "installations": [
+                                    {
+                                        "id": 1000 + index,
+                                        "app_id": 2000 + index,
+                                        "app_slug": f"app-{index}",
+                                        "repository_selection": "selected",
+                                        "permissions": {},
+                                        "events": [],
+                                        "suspended_at": None,
+                                    }
+                                    for index in range(100)
+                                ],
+                            }
                     else:
                         value = {"total_count": 0, "installations": []}
-                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/permissions/access"):
+                elif path.startswith("/repos/mindclade/") and path.endswith(
+                    "/actions/permissions/access"
+                ):
                     repository = path.split("/")[4]
                     value = {"access_level": "organization" if repository == ".github" else "none"}
                 elif path.endswith("/actions/oidc/customization/sub"):
@@ -1108,17 +1510,24 @@ class ObservedStateDiffTest(unittest.TestCase):
                     }
                 elif path.endswith("/environments"):
                     value = {"total_count": 0, "environments": []}
-                elif path.endswith((
-                    "/vulnerability-alerts", "/dependency-graph/sbom", "/automated-security-fixes",
-                    "/private-vulnerability-reporting",
-                )):
+                elif path.endswith(
+                    (
+                        "/vulnerability-alerts",
+                        "/dependency-graph/sbom",
+                        "/automated-security-fixes",
+                        "/private-vulnerability-reporting",
+                    )
+                ):
                     status, value = 204, None
                 elif path.endswith("/code-scanning/default-setup"):
                     value = {"state": "configured"}
                 elif path in {
-                    "/orgs/mindclade/properties/schema", "/orgs/mindclade/organization-roles/77/teams",
-                    "/orgs/mindclade/teams", "/orgs/mindclade/members",
-                    "/orgs/mindclade/outside_collaborators", "/orgs/mindclade/rulesets",
+                    "/orgs/mindclade/properties/schema",
+                    "/orgs/mindclade/organization-roles/77/teams",
+                    "/orgs/mindclade/teams",
+                    "/orgs/mindclade/members",
+                    "/orgs/mindclade/outside_collaborators",
+                    "/orgs/mindclade/rulesets",
                 } or path.endswith(("/teams", "/collaborators", "/properties/values")):
                     value = []
                 else:
@@ -1145,7 +1554,11 @@ class ObservedStateDiffTest(unittest.TestCase):
                     server.installation_case = installation_case
                     output = directory / f"{label}.json"
                     result = invoke(
-                        "observe", "--organization", "mindclade", "--output", str(output),
+                        "observe",
+                        "--organization",
+                        "mindclade",
+                        "--output",
+                        str(output),
                         environment={
                             "GITHUB_TOKEN": "fixture-token",
                             "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}",
@@ -1170,9 +1583,15 @@ class ObservedStateDiffTest(unittest.TestCase):
                 self.assertFalse(missing_totals["repository_inventory"]["totals_known"])
 
                 extra_installation = observe("extra-installation", (0, 6), "extra")
-                self.assertTrue(extra_installation["installation_inventory"]["api_inventory_complete"])
-                self.assertFalse(extra_installation["installation_inventory"]["catalog_disposition_complete"])
-                self.assertFalse(extra_installation["installation_inventory"]["bootstrap_qualified"])
+                self.assertTrue(
+                    extra_installation["installation_inventory"]["api_inventory_complete"]
+                )
+                self.assertFalse(
+                    extra_installation["installation_inventory"]["catalog_disposition_complete"]
+                )
+                self.assertFalse(
+                    extra_installation["installation_inventory"]["bootstrap_qualified"]
+                )
 
                 count_mismatch = observe("installation-count-mismatch", (0, 6), "count_mismatch")
                 self.assertFalse(count_mismatch["installation_inventory"]["api_inventory_complete"])

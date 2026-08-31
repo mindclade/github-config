@@ -1,0 +1,21 @@
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+extend-exclude = ["bazel-*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM", "PTH", "RUF"]
+# Ruff's formatter treats 100 columns as a preference and intentionally leaves
+# indivisible URLs, digests, and fixture strings intact.
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pyright]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+include = ["tests"]
+exclude = ["bazel-*"]

@@ -1,13 +1,13 @@
-import json
+# pyright: basic, reportArgumentType=false, reportAttributeAccessIssue=false, reportCallIssue=false, reportOperatorIssue=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false
 import hashlib
-from datetime import datetime, timedelta, timezone
+import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
-
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI = os.environ.get("GITHUB_CONFIGCTL") or (sys.argv[1] if len(sys.argv) > 1 else "")
@@ -18,8 +18,13 @@ def invoke(*arguments):
         command, cwd = [str(Path(CLI).resolve())], ROOT
     else:
         command, cwd = ["go", "run", "./cmd/github-configctl"], ROOT / "compiler"
-    return subprocess.run(command + ["--root", str(ROOT), *arguments], cwd=cwd, text=True,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    return subprocess.run(
+        [*command, "--root", str(ROOT), *arguments],
+        cwd=cwd,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
 
 class PermissionReductionTest(unittest.TestCase):
@@ -81,31 +86,43 @@ class PermissionReductionTest(unittest.TestCase):
             if authority["repository"] == "gitops"
         )
         self.assertEqual(gitops_authority["revision"], "")
-        self.assertEqual(gitops_authority["activation"], {
-            "state": "blocked",
-            "blockers": ["gitops-thin-reusable-caller-qualification-pending"],
-        })
+        self.assertEqual(
+            gitops_authority["activation"],
+            {
+                "state": "blocked",
+                "blockers": ["gitops-thin-reusable-caller-qualification-pending"],
+            },
+        )
 
         allowed_pins = {
             action["source"]: action["commit"]
             for action in catalog["actions_policy"]["allowed_actions"]
         }
-        self.assertEqual(allowed_pins["actions/dependency-review-action"],
-                         "a1d282b36b6f3519aa1f3fc636f609c47dddb294")
-        self.assertEqual(allowed_pins["github/codeql-action"],
-                         "cdf488f595d80d6e07e03d4674febd5ab45fa938")
-        self.assertEqual(allowed_pins["google-github-actions/setup-gcloud"],
-                         "aa5489c8933f4cc7a4f7d45035b3b1440c9c10db")
-        self.assertEqual(allowed_pins["actions/attest-build-provenance"],
-                         "4d101475d8b20a2381f78447822ac1eab6504dd8")
-        self.assertEqual(allowed_pins["actions/setup-go"],
-                         "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e")
-        self.assertEqual(allowed_pins["actions/setup-python"],
-                         "5fda3b95a4ea91299a34e894583c3862153e4b97")
-        self.assertEqual(allowed_pins["bazel-contrib/setup-bazel"],
-                         "c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86")
-        self.assertEqual(allowed_pins["DeterminateSystems/nix-installer-action"],
-                         "ef8a148080ab6020fd15196c2084a2eea5ff2d25")
+        self.assertEqual(
+            allowed_pins["actions/dependency-review-action"],
+            "a1d282b36b6f3519aa1f3fc636f609c47dddb294",
+        )
+        self.assertEqual(
+            allowed_pins["github/codeql-action"], "cdf488f595d80d6e07e03d4674febd5ab45fa938"
+        )
+        self.assertEqual(
+            allowed_pins["google-github-actions/setup-gcloud"],
+            "aa5489c8933f4cc7a4f7d45035b3b1440c9c10db",
+        )
+        self.assertEqual(
+            allowed_pins["actions/attest-build-provenance"],
+            "4d101475d8b20a2381f78447822ac1eab6504dd8",
+        )
+        self.assertEqual(
+            allowed_pins["actions/setup-go"], "b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+        )
+        self.assertEqual(
+            allowed_pins["actions/setup-python"], "5fda3b95a4ea91299a34e894583c3862153e4b97"
+        )
+        self.assertEqual(
+            allowed_pins["DeterminateSystems/nix-installer-action"],
+            "ef8a148080ab6020fd15196c2084a2eea5ff2d25",
+        )
 
         subjects = {
             subject["id"]: subject
@@ -124,13 +141,18 @@ class PermissionReductionTest(unittest.TestCase):
             capability = identity.rsplit("-", 1)[1]
             self.assertEqual(subject["repository"], "infrastructure-live")
             self.assertEqual(subject["workflow"], ".github/workflows/protected-apply.yml")
-            self.assertEqual(subject["context"], {
-                "type": "environment",
-                "value": "trusted-build" if capability == "plan" else "infrastructure-apply",
-            })
+            self.assertEqual(
+                subject["context"],
+                {
+                    "type": "environment",
+                    "value": "trusted-build" if capability == "plan" else "infrastructure-apply",
+                },
+            )
             self.assertEqual(subject["workload_identity_provider_ref"], identity)
             self.assertEqual(subject["service_account_ref"], identity)
-            bindings.add((subject["workload_identity_provider_ref"], subject["service_account_ref"]))
+            bindings.add(
+                (subject["workload_identity_provider_ref"], subject["service_account_ref"])
+            )
         self.assertEqual(len(bindings), 8)
 
     def test_aliases_do_not_satisfy_distinct_human_preflight(self):
@@ -144,7 +166,9 @@ class PermissionReductionTest(unittest.TestCase):
                 "errors": [],
                 "organization": {"login": "mindclade", "two_factor_requirement_enabled": True},
                 "members": [{"login": member["login"]} for member in catalog["members"]],
-                "organization_admins": [{"login": member["login"]} for member in catalog["members"]],
+                "organization_admins": [
+                    {"login": member["login"]} for member in catalog["members"]
+                ],
                 "managed_projection": {},
                 "capabilities": {
                     "enterprise_cloud": True,
@@ -153,16 +177,19 @@ class PermissionReductionTest(unittest.TestCase):
                     "protected_environments": True,
                     "protected_environments_available": True,
                 },
-                "integrations": {
-                    name: {"qualified": True} for name in catalog["integrations"]
-                },
+                "integrations": {name: {"qualified": True} for name in catalog["integrations"]},
             }
             observed_path = directory / "observed.json"
             report_path = directory / "preflight.json"
             observed_path.write_text(json.dumps(observed))
             result = invoke(
-                "preflight", "--desired", str(catalog_path),
-                "--observed", str(observed_path), "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--output",
+                str(report_path),
             )
             self.assertEqual(result.returncode, 2, result.stderr)
             report = json.loads(report_path.read_text())
@@ -174,15 +201,29 @@ class PermissionReductionTest(unittest.TestCase):
             self.assertFalse(report["eligible"])
 
             adopt = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "adopt", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "adopt",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(adopt.returncode, 0, adopt.stderr)
             self.assertEqual(json.loads(report_path.read_text())["blockers"], [])
 
             foundation = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "foundation", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "foundation",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(foundation.returncode, 2, foundation.stderr)
             foundation_report = json.loads(report_path.read_text())
@@ -191,36 +232,46 @@ class PermissionReductionTest(unittest.TestCase):
             self.assertIn("INSTALLATION_INVENTORY_UNQUALIFIED", foundation_codes)
             self.assertNotIn("INSUFFICIENT_DISTINCT_HUMANS", foundation_codes)
             self.assertNotIn("REVIEWER_QUORUM_UNSATISFIED", foundation_codes)
-            self.assertEqual(foundation_report["founder_bootstrap"], {
-                "exception_id": "FBE-0001",
-                "scope": "founder-bootstrap-only",
-                "workflow_ref": "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
-                "allowed_operations": [
-                    "foundation-plan", "foundation-apply", "foundation-verification",
-                ],
-                "denied_operations": [
-                    "adoption", "enforcement", "production-authority", "exception-replay",
-                ],
-                "authorized_operation": "foundation-apply",
-                "single_use_initial_state": "UNUSED",
-                "single_use_terminal_state": "CONSUMED",
-                "receipt_required": True,
-                "receipt_digest_algorithm": "sha256",
-                "principal_id": "founder-primary",
-                "github_actor_accounts": ["mindclade-founder", "robpearc"],
-                "independent_principals": False,
-                "production_authority": False,
-                "eligible": True,
-                "status": "eligible",
-                "expires_at": "2026-09-30T23:59:59Z",
-            })
+            self.assertEqual(
+                foundation_report["founder_bootstrap"],
+                {
+                    "exception_id": "FBE-0001",
+                    "scope": "founder-bootstrap-only",
+                    "workflow_ref": "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main",
+                    "allowed_operations": [
+                        "foundation-plan",
+                        "foundation-apply",
+                        "foundation-verification",
+                    ],
+                    "denied_operations": [
+                        "adoption",
+                        "enforcement",
+                        "production-authority",
+                        "exception-replay",
+                    ],
+                    "authorized_operation": "foundation-apply",
+                    "single_use_initial_state": "UNUSED",
+                    "single_use_terminal_state": "CONSUMED",
+                    "receipt_required": True,
+                    "receipt_digest_algorithm": "sha256",
+                    "principal_id": "founder-primary",
+                    "github_actor_accounts": ["mindclade-founder", "robpearc"],
+                    "independent_principals": False,
+                    "production_authority": False,
+                    "eligible": True,
+                    "status": "eligible",
+                    "expires_at": "2026-09-30T23:59:59Z",
+                },
+            )
 
             blocked_ids = {
-                key for key, activation in catalog["activation"].items()
+                key
+                for key, activation in catalog["activation"].items()
                 if activation["state"] != "ready" or activation["blockers"]
             }
             activation_messages = [
-                item["message"] for item in foundation_report["blockers"]
+                item["message"]
+                for item in foundation_report["blockers"]
                 if item["code"] == "DESIRED_ACTIVATION_BLOCKED"
             ]
             for blocked_id in blocked_ids:
@@ -251,13 +302,27 @@ class PermissionReductionTest(unittest.TestCase):
             report_path = directory / "preflight.json"
             observed_path.write_text(json.dumps(observed))
             adopt = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "adopt", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "adopt",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(adopt.returncode, 0, adopt.stderr)
             foundation = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "foundation", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "foundation",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(foundation.returncode, 2, foundation.stderr)
             self.assertIn(
@@ -270,9 +335,12 @@ class PermissionReductionTest(unittest.TestCase):
             directory = Path(temporary)
             catalog, catalog_path = self.compile_catalog(directory)
             catalog["members"][1]["principal_id"] = "independent-administrator"
-            catalog["teams"]["release-engineering"]["members"].append({
-                "login": catalog["members"][0]["login"], "role": "maintainer",
-            })
+            catalog["teams"]["release-engineering"]["members"].append(
+                {
+                    "login": catalog["members"][0]["login"],
+                    "role": "maintainer",
+                }
+            )
             catalog_path.write_text(json.dumps(catalog))
             observed = {
                 "core_observation_complete": True,
@@ -284,8 +352,13 @@ class PermissionReductionTest(unittest.TestCase):
                     "two_factor_requirement_enabled": False,
                 },
                 "members": [{"login": member["login"]} for member in catalog["members"]],
-                "organization_admins": [{"login": member["login"]} for member in catalog["members"]],
-                "teams": {}, "repositories": {}, "rulesets": {}, "environments": {},
+                "organization_admins": [
+                    {"login": member["login"]} for member in catalog["members"]
+                ],
+                "teams": {},
+                "repositories": {},
+                "rulesets": {},
+                "environments": {},
                 "managed_projection": {},
                 "managed_state_matches_desired": False,
                 "capabilities": {
@@ -300,18 +373,34 @@ class PermissionReductionTest(unittest.TestCase):
             report_path = directory / "preflight.json"
             observed_path.write_text(json.dumps(observed))
             foundation = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "foundation", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "foundation",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(foundation.returncode, 2, foundation.stderr)
-            foundation_codes = {item["code"] for item in json.loads(report_path.read_text())["blockers"]}
+            foundation_codes = {
+                item["code"] for item in json.loads(report_path.read_text())["blockers"]
+            }
             self.assertIn("DESIRED_ACTIVATION_BLOCKED", foundation_codes)
             self.assertIn("INSTALLATION_INVENTORY_UNQUALIFIED", foundation_codes)
             self.assertIn("TWO_FACTOR_REQUIREMENT_MISMATCH", foundation_codes)
             self.assertIn("OIDC_IDENTITY_INCOMPLETE", foundation_codes)
             enforce = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "enforce", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "enforce",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(enforce.returncode, 2, enforce.stderr)
             codes = {item["code"] for item in json.loads(report_path.read_text())["blockers"]}
@@ -324,7 +413,8 @@ class PermissionReductionTest(unittest.TestCase):
             directory = Path(temporary)
             catalog, catalog_path = self.compile_catalog(directory)
             catalog["organization"]["custom_property_migration"] = {
-                "phase": "retire", "legacy_allowed_values": {},
+                "phase": "retire",
+                "legacy_allowed_values": {},
             }
             catalog_path.write_text(json.dumps(catalog))
             observed = {
@@ -350,8 +440,15 @@ class PermissionReductionTest(unittest.TestCase):
             report_path = directory / "preflight.json"
             observed_path.write_text(json.dumps(observed))
             blocked = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "foundation", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "foundation",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(blocked.returncode, 2, blocked.stderr)
             self.assertIn(
@@ -360,11 +457,20 @@ class PermissionReductionTest(unittest.TestCase):
             )
 
             repository = next(iter(catalog["repositories"].values()))
-            first_repository[0]["value"] = repository["custom_properties"][first_repository[0]["property_name"]]
+            first_repository[0]["value"] = repository["custom_properties"][
+                first_repository[0]["property_name"]
+            ]
             observed_path.write_text(json.dumps(observed))
             invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "foundation", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "foundation",
+                "--output",
+                str(report_path),
             )
             self.assertNotIn(
                 "CUSTOM_PROPERTY_RETIREMENT_UNQUALIFIED",
@@ -388,7 +494,8 @@ class PermissionReductionTest(unittest.TestCase):
                 "oidc_policy": {"include_claim_keys": claims, "use_immutable_subject": True},
                 "repository_oidc_policies": {
                     "github-config": {
-                        "use_default": False, "include_claim_keys": claims,
+                        "use_default": False,
+                        "include_claim_keys": claims,
                         "use_immutable_subject": True,
                     },
                 },
@@ -398,9 +505,11 @@ class PermissionReductionTest(unittest.TestCase):
                 "members": [{"login": member["login"]} for member in members],
                 "organization_admins": [{"login": member["login"]} for member in members],
                 "teams": {"security": {"id": 10, "name": "security", "slug": "security"}},
-                "team_members": {"security": [
-                    {"login": member["login"], "role": "maintainer"} for member in members
-                ]},
+                "team_members": {
+                    "security": [
+                        {"login": member["login"], "role": "maintainer"} for member in members
+                    ]
+                },
                 "repositories": {
                     repository["name"]: {"id": 20 + index, "name": repository["name"]}
                     for index, repository in enumerate(catalog["repositories"].values())
@@ -414,13 +523,15 @@ class PermissionReductionTest(unittest.TestCase):
                 "repository_dependabot_security_updates": {"github-config": True},
                 "repository_custom_properties": {"github-config": []},
                 "repository_direct_collaborators": {"github-config": []},
-                "organization_custom_properties": [{
-                    "property_name": managed_property["name"],
-                    "value_type": managed_property["value_type"],
-                    "required": managed_property["required"],
-                    "allowed_values": managed_property["allowed_values"],
-                    "values_editable_by": managed_property["values_editable_by"],
-                }],
+                "organization_custom_properties": [
+                    {
+                        "property_name": managed_property["name"],
+                        "value_type": managed_property["value_type"],
+                        "required": managed_property["required"],
+                        "allowed_values": managed_property["allowed_values"],
+                        "values_editable_by": managed_property["values_editable_by"],
+                    }
+                ],
                 "security_manager_teams": [],
                 "organization_roles": {"roles": []},
             }
@@ -428,8 +539,15 @@ class PermissionReductionTest(unittest.TestCase):
             report_path = directory / "preflight.json"
             observed_path.write_text(json.dumps(observed))
             result = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "adopt", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "adopt",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(
                 result.returncode,
@@ -441,13 +559,20 @@ class PermissionReductionTest(unittest.TestCase):
             self.assertEqual(report["adopted_repository_names"]["github-config"], "github-config")
             self.assertEqual(report["adopted_ruleset_ids"], {ruleset_key: 31})
             self.assertEqual(report["adopted_ruleset_enforcements"], {ruleset_key: "active"})
-            self.assertEqual(report["adopted_organization_oidc_templates"], {"organization": "mindclade"})
-            self.assertEqual(report["adopted_repository_oidc_templates"], {"github-config": "github-config"})
+            self.assertEqual(
+                report["adopted_organization_oidc_templates"], {"organization": "mindclade"}
+            )
+            self.assertEqual(
+                report["adopted_repository_oidc_templates"], {"github-config": "github-config"}
+            )
             self.assertEqual(
                 report["adopted_repository_actions_access_levels"],
                 {},
             )
-            self.assertEqual(report["adopted_memberships"][members[0]["login"]], f"mindclade:{members[0]['login']}")
+            self.assertEqual(
+                report["adopted_memberships"][members[0]["login"]],
+                f"mindclade:{members[0]['login']}",
+            )
             self.assertEqual(
                 report["adopted_team_memberships"][f"security:{members[0]['login']}"],
                 f"10:{members[0]['login']}",
@@ -456,7 +581,9 @@ class PermissionReductionTest(unittest.TestCase):
                 report["adopted_team_repository_grants"]["github-config:security"],
                 "10:github-config",
             )
-            self.assertEqual(report["adopted_dependabot_security_updates"], {"github-config": "github-config"})
+            self.assertEqual(
+                report["adopted_dependabot_security_updates"], {"github-config": "github-config"}
+            )
             self.assertEqual(
                 report["adopted_organization_custom_properties"],
                 {managed_property["name"]: managed_property["name"]},
@@ -467,11 +594,20 @@ class PermissionReductionTest(unittest.TestCase):
                 set(catalog["repositories"]),
             )
 
-            observed["organization_custom_properties"][0]["values_editable_by"] = "repository_actors"
+            observed["organization_custom_properties"][0]["values_editable_by"] = (
+                "repository_actors"
+            )
             observed_path.write_text(json.dumps(observed))
             result = invoke(
-                "preflight", "--desired", str(catalog_path), "--observed", str(observed_path),
-                "--phase", "adopt", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(catalog_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "adopt",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertNotIn(
@@ -482,7 +618,7 @@ class PermissionReductionTest(unittest.TestCase):
     def test_integration_qualification_requires_self_digest_and_observed_repository_scope(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            now = datetime.now(timezone.utc).replace(microsecond=0)
+            now = datetime.now(UTC).replace(microsecond=0)
             attestation = {
                 "authority": "bootstrap",
                 "source_sha": "a" * 40,
@@ -512,25 +648,31 @@ class PermissionReductionTest(unittest.TestCase):
                     {"login": "admin-two", "role": "admin", "principal_id": "two", "active": True},
                 ],
                 "teams": {"owner": {"name": "owner", "members": []}},
-                "repositories": {"repo": {
-                    "name": "repo",
-                    "custom_properties": {"owner_team": "owner"},
-                    "team_grants": [{"team": "owner", "permission": "maintain"}],
-                }},
+                "repositories": {
+                    "repo": {
+                        "name": "repo",
+                        "custom_properties": {"owner_team": "owner"},
+                        "team_grants": [{"team": "owner", "permission": "maintain"}],
+                    }
+                },
                 "rulesets": {},
                 "environments": {},
-                "integrations": {"app": {
-                    "actor_id": 123,
-                    "repository_selection": "selected",
-                    "repositories": ["repo"],
-                    "permissions": [{"name": "contents", "access": "read"}],
-                    "events": ["push"],
-                    "qualification": {
-                        "state": "qualified", "authority": "bootstrap",
-                        "evidence_digest": digest, "attestation": attestation,
-                    },
-                    "activation": {"state": "ready", "blockers": []},
-                }},
+                "integrations": {
+                    "app": {
+                        "actor_id": 123,
+                        "repository_selection": "selected",
+                        "repositories": ["repo"],
+                        "permissions": [{"name": "contents", "access": "read"}],
+                        "events": ["push"],
+                        "qualification": {
+                            "state": "qualified",
+                            "authority": "bootstrap",
+                            "evidence_digest": digest,
+                            "attestation": attestation,
+                        },
+                        "activation": {"state": "ready", "blockers": []},
+                    }
+                },
                 "activation": {"app": {"state": "ready", "blockers": []}},
             }
             observed = {
@@ -539,7 +681,9 @@ class PermissionReductionTest(unittest.TestCase):
                 "repository_inventory_complete": True,
                 "errors": [],
                 "organization": {
-                    "id": 1, "login": "mindclade", "two_factor_requirement_enabled": False,
+                    "id": 1,
+                    "login": "mindclade",
+                    "two_factor_requirement_enabled": False,
                 },
                 "members": [{"login": "admin-one"}, {"login": "admin-two"}],
                 "organization_admins": [{"login": "admin-one"}, {"login": "admin-two"}],
@@ -550,18 +694,20 @@ class PermissionReductionTest(unittest.TestCase):
                 "managed_projection": {},
                 "managed_state_matches_desired": True,
                 "capabilities": {},
-                "integrations": {"app": {
-                    "installed": True,
-                    "qualified": False,
-                    "actor_id": 123,
-                    "installation_id": 456,
-                    "app_slug": "app",
-                    "events": ["push"],
-                    "suspended_at": None,
-                    "repository_selection": "selected",
-                    "permissions": {"contents": "read"},
-                    "repository_scope_observed": False,
-                }},
+                "integrations": {
+                    "app": {
+                        "installed": True,
+                        "qualified": False,
+                        "actor_id": 123,
+                        "installation_id": 456,
+                        "app_slug": "app",
+                        "events": ["push"],
+                        "suspended_at": None,
+                        "repository_selection": "selected",
+                        "permissions": {"contents": "read"},
+                        "repository_scope_observed": False,
+                    }
+                },
             }
             desired_path = directory / "desired.json"
             observed_path = directory / "observed.json"
@@ -569,8 +715,15 @@ class PermissionReductionTest(unittest.TestCase):
             desired_path.write_text(json.dumps(desired))
             observed_path.write_text(json.dumps(observed))
             result = invoke(
-                "preflight", "--desired", str(desired_path), "--observed", str(observed_path),
-                "--phase", "enforce", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(desired_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "enforce",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(result.returncode, 2, result.stderr)
             qualified_report = json.loads(report_path.read_text())
@@ -584,23 +737,30 @@ class PermissionReductionTest(unittest.TestCase):
                 "state": "qualified",
                 "authority": "bootstrap",
                 "source_sha": "b" * 40,
-                "workflow_ref": "mindclade/bootstrap/.github/workflows/protected-apply.yml@" + "b" * 40,
+                "workflow_ref": "mindclade/bootstrap/.github/workflows/protected-apply.yml@"
+                + "b" * 40,
                 "created_at": now.isoformat().replace("+00:00", "Z"),
                 "expires_at": (now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
-                "installations": [{
-                    "app_slug": "app",
-                    "app_id": 123,
-                    "installation_id": 456,
-                    "disposition": "catalog",
-                    "integration_id": "app",
-                    "integration_evidence_digest": digest,
-                }],
+                "installations": [
+                    {
+                        "app_slug": "app",
+                        "app_id": 123,
+                        "installation_id": 456,
+                        "disposition": "catalog",
+                        "integration_id": "app",
+                        "integration_evidence_digest": digest,
+                    }
+                ],
             }
-            canonical_inventory = json.dumps(inventory_qualification, sort_keys=True, indent=2) + "\n"
+            canonical_inventory = (
+                json.dumps(inventory_qualification, sort_keys=True, indent=2) + "\n"
+            )
             inventory_qualification["evidence_digest"] = (
                 "sha256:" + hashlib.sha256(canonical_inventory.encode()).hexdigest()
             )
-            desired["organization"]["installation_inventory_qualification"] = inventory_qualification
+            desired["organization"]["installation_inventory_qualification"] = (
+                inventory_qualification
+            )
             observed["installation_inventory"] = {
                 "api_inventory_complete": True,
                 "total_count": 1,
@@ -608,8 +768,15 @@ class PermissionReductionTest(unittest.TestCase):
             desired_path.write_text(json.dumps(desired))
             observed_path.write_text(json.dumps(observed))
             result = invoke(
-                "preflight", "--desired", str(desired_path), "--observed", str(observed_path),
-                "--phase", "enforce", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(desired_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "enforce",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(
                 result.returncode,
@@ -624,8 +791,15 @@ class PermissionReductionTest(unittest.TestCase):
             observed["repositories"]["repo"]["id"] = 3
             observed_path.write_text(json.dumps(observed))
             result = invoke(
-                "preflight", "--desired", str(desired_path), "--observed", str(observed_path),
-                "--phase", "enforce", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(desired_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "enforce",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn(
@@ -635,11 +809,20 @@ class PermissionReductionTest(unittest.TestCase):
 
             observed["repositories"]["repo"]["id"] = 2
             observed_path.write_text(json.dumps(observed))
-            desired["integrations"]["app"]["qualification"]["evidence_digest"] = "sha256:" + "0" * 64
+            desired["integrations"]["app"]["qualification"]["evidence_digest"] = (
+                "sha256:" + "0" * 64
+            )
             desired_path.write_text(json.dumps(desired))
             result = invoke(
-                "preflight", "--desired", str(desired_path), "--observed", str(observed_path),
-                "--phase", "enforce", "--output", str(report_path),
+                "preflight",
+                "--desired",
+                str(desired_path),
+                "--observed",
+                str(observed_path),
+                "--phase",
+                "enforce",
+                "--output",
+                str(report_path),
             )
             self.assertEqual(result.returncode, 2, result.stderr)
 

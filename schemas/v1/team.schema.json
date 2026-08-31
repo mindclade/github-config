@@ -6,10 +6,10 @@
   "additionalProperties": false,
   "required": ["api_version", "kind", "metadata", "spec"],
   "properties": {
-    "api_version": {"const": "github.mindclade.io/v1"},
-    "kind": {"const": "Team"},
-    "metadata": {"$ref": "#/$defs/metadata"},
-    "spec": {"$ref": "#/$defs/spec"}
+    "api_version": { "const": "github.mindclade.io/v1" },
+    "kind": { "const": "Team" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/spec" }
   },
   "$defs": {
     "metadata": {
@@ -17,8 +17,8 @@
       "additionalProperties": false,
       "required": ["id", "owner_team"],
       "properties": {
-        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
-        "owner_team": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+        "owner_team": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" }
       }
     },
     "activation": {
@@ -26,8 +26,12 @@
       "additionalProperties": false,
       "required": ["state", "blockers"],
       "properties": {
-        "state": {"enum": ["ready", "blocked"]},
-        "blockers": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]+$"}}
+        "state": { "enum": ["ready", "blocked"] },
+        "blockers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]+$" }
+        }
       }
     },
     "member": {
@@ -35,8 +39,8 @@
       "additionalProperties": false,
       "required": ["login", "role"],
       "properties": {
-        "login": {"type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$"},
-        "role": {"enum": ["member", "maintainer"]}
+        "login": { "type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$" },
+        "role": { "enum": ["member", "maintainer"] }
       }
     },
     "spec": {
@@ -44,12 +48,12 @@
       "additionalProperties": false,
       "required": ["name", "description", "privacy", "parent_team", "members", "activation"],
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
-        "description": {"type": "string", "minLength": 10, "maxLength": 255},
-        "privacy": {"enum": ["closed", "secret"]},
-        "parent_team": {"type": "null"},
-        "members": {"type": "array", "items": {"$ref": "#/$defs/member"}},
-        "activation": {"$ref": "#/$defs/activation"}
+        "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
+        "description": { "type": "string", "minLength": 10, "maxLength": 255 },
+        "privacy": { "enum": ["closed", "secret"] },
+        "parent_team": { "type": "null" },
+        "members": { "type": "array", "items": { "$ref": "#/$defs/member" } },
+        "activation": { "$ref": "#/$defs/activation" }
       }
     }
   }
