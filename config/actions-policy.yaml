@@ -32,7 +32,7 @@ spec:
       activation:
         state: reviewed
     - repository: bootstrap
-      revision: 850e4b5ec1a2913fab8d96567767d56c43584a6e
+      revision: b19fd5ac611823a6f4095beca24c17f727a3cb2c
       workflows: [pull-request.yml, recovery-verification.yml, protected-apply.yml]
       activation:
         state: reviewed
