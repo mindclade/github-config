@@ -80,7 +80,7 @@ class CatalogSchemaTest(unittest.TestCase):
             self.assertIn(required, module)
 
     def test_generated_ci_policy_is_exactly_authority_bound(self):
-        revision = "b4d28faa5fde98087f60262110a43f25f6da9eb8"
+        revision = "49a015c2c0cdd6a75a5756eb8c1e95b49d117917"
         policy_lock = json.loads(
             (ROOT / "generated" / "nix-bazel-policy.lock.json").read_text(encoding="utf-8")
         )

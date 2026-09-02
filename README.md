@@ -37,7 +37,7 @@ The repository-local `flake.nix` and `flake.lock` remain the consumer
 system-toolchain lock for supported `aarch64-darwin` and `x86_64-linux` hosts.
 They import the four checked-in estate defaults under `generated/`, bound to
 the exact `mindclade/.github` authority revision
-`b4d28faa5fde98087f60262110a43f25f6da9eb8`; validation rejects any byte drift
+`49a015c2c0cdd6a75a5756eb8c1e95b49d117917`; validation rejects any byte drift
 and performs no mutable remote policy fetch. The flake exposes the reviewed
 toolchain package, identical default/CI shell closures, formatter, and
 toolchain/source checks while preserving Go modules, OpenTofu provider locks,
