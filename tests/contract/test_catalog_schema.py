@@ -747,7 +747,10 @@ class CatalogSchemaTest(unittest.TestCase):
                     stdout=subprocess.PIPE,
                 ).stdout.strip()
                 self.assertEqual(
-                    revision, main_revision, "reviewed revision is stale relative to sibling main"
+                    revision,
+                    main_revision,
+                    "reviewed revision is stale relative to sibling main; "
+                    "run `just sync-authority-revisions` to re-attest",
                 )
                 for workflow in authority["workflows"]:
                     result = subprocess.run(
@@ -966,6 +969,7 @@ class CatalogSchemaTest(unittest.TestCase):
                     "integration",
                 )
             },
+            "tools/sync_authority_revisions.py",
             "compiler/cmd/github-configctl/main.go",
             "compiler/internal/catalog/catalog.go",
             "compiler/internal/diff/github_diff.go",

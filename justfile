@@ -35,6 +35,17 @@ lint:
 validate:
     cd compiler && go run ./cmd/github-configctl --root .. validate
 
+# Re-attest the reviewed authority revisions against the sibling repository
+# mains. Every commit to a reviewed sibling (.github, bootstrap,
+# infrastructure-live) makes the recorded revision stale by design; this
+# rewrites it so the attestation matches what is actually on main.
+sync-authority-revisions:
+    python3 tools/sync_authority_revisions.py
+
+# Report authority revision drift without rewriting anything.
+authority-drift:
+    python3 tools/sync_authority_revisions.py --check
+
 compile output="build/catalog.json" tofu_vars="":
     cd compiler && go run ./cmd/github-configctl --root .. compile --output "../{{ output }}" {{ if tofu_vars != "" { "--tofu-var-file ../" + tofu_vars } else { "" } }}
 
