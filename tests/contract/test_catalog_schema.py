@@ -69,6 +69,15 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(validation["status"], "valid")
         self.assertRegex(validation["source_digest"], r"^sha256:[0-9a-f]{64}$")
 
+    def test_bazel_dependabot_stages_nested_go_module(self):
+        module = (ROOT / "MODULE.bazel").read_text(encoding="utf-8")
+        for required in (
+            'go_mod_from_file = "//compiler:go.mod"',
+            'go_sum_from_file = "//compiler:go.sum"',
+            "go_deps.from_file(go_mod = go_mod_from_file)",
+        ):
+            self.assertIn(required, module)
+
     def test_public_free_estate_and_founder_exception_are_exact(self):
         result = invoke("compile", "--output", "-")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1536,7 +1545,7 @@ class CatalogSchemaTest(unittest.TestCase):
         workflow.write_text(
             workflow.read_text().replace(
                 "mindclade/.github/.github/workflows/reusable-nix-validation.yml@"
-                "c097ef86c25991a400050c13e78574e8d3d8c071",
+                "f9b6ebcecd197157d9466eeacf8e2864e32c9a79",
                 "mindclade/.github/.github/workflows/reusable-required-check.yml@" + "a" * 40,
                 1,
             )
@@ -1556,7 +1565,7 @@ class CatalogSchemaTest(unittest.TestCase):
         workflow.write_text(
             workflow.read_text().replace(
                 "mindclade/.github/.github/workflows/reusable-nix-validation.yml@"
-                "c097ef86c25991a400050c13e78574e8d3d8c071",
+                "f9b6ebcecd197157d9466eeacf8e2864e32c9a79",
                 "mindclade/.github/.github/workflows/not-declared.yml@" + implementation_revision,
                 1,
             )

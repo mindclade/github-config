@@ -17,8 +17,8 @@ spec:
     public_fork_pull_requests: false
   authority_inventories:
     - repository: .github
-      revision: 59b6fe9b76e8497572e289e83891817df5e62a7d
-      implementation_revision: c097ef86c25991a400050c13e78574e8d3d8c071
+      revision: aabf14ba287eb3453cf9f42e19674df308564d1b
+      implementation_revision: f9b6ebcecd197157d9466eeacf8e2864e32c9a79
       workflows:
         - reusable-buildkite-dispatch.yml
         - reusable-required-check.yml
@@ -32,12 +32,12 @@ spec:
       activation:
         state: reviewed
     - repository: bootstrap
-      revision: b16f0628ce9fb87cd61fd5f38d655b89eaa81905
+      revision: a365f2f56568e5ce76e2c1e18ccc76259889ce3a
       workflows: [pull-request.yml, recovery-verification.yml, protected-apply.yml]
       activation:
         state: reviewed
     - repository: infrastructure-live
-      revision: fa725a011c5ca03b9718a13816467621b1c5a902
+      revision: 8263a2fad1417f95601d95500a9ef95160d04cca
       workflows: [pull-request.yml, drift-detection.yml, protected-apply.yml, disaster-recovery.yml]
       activation:
         state: reviewed

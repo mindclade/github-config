@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   validate:
-    uses: mindclade/.github/.github/workflows/reusable-nix-validation.yml@c097ef86c25991a400050c13e78574e8d3d8c071
+    uses: mindclade/.github/.github/workflows/reusable-nix-validation.yml@f9b6ebcecd197157d9466eeacf8e2864e32c9a79
     with:
       source_revision: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
 
