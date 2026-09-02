@@ -99,6 +99,7 @@ var sourceDefinitions = []sourceDefinition{
 	{"config/integrations/buildkite.yaml", "integration.schema.json", "Integration", "integrations"},
 	{"config/integrations/artifact-signing.yaml", "integration.schema.json", "Integration", "integrations"},
 	{"config/integrations/gitops-controller.yaml", "integration.schema.json", "Integration", "integrations"},
+	{"config/integrations/renovate.yaml", "integration.schema.json", "Integration", "integrations"},
 }
 
 var schemaFiles = []string{

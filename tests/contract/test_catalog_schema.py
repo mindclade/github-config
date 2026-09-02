@@ -954,7 +954,7 @@ class CatalogSchemaTest(unittest.TestCase):
             },
             *{
                 f"config/integrations/{name}.yaml"
-                for name in ("buildkite", "artifact-signing", "gitops-controller")
+                for name in ("buildkite", "artifact-signing", "gitops-controller", "renovate")
             },
             *{
                 f"schemas/v1/{name}.schema.json"
@@ -1047,6 +1047,7 @@ class CatalogSchemaTest(unittest.TestCase):
                     "oidc-policy-lockout",
                     "compromised-github-app",
                     "governance-state-restore",
+                    "renovate-app-provisioning",
                 )
             },
         }

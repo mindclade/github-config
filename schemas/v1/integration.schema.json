@@ -45,9 +45,11 @@
             "attestations",
             "checks",
             "contents",
+            "issues",
             "metadata",
             "pull_requests",
-            "statuses"
+            "statuses",
+            "workflows"
           ]
         },
         "access": { "enum": ["read", "write"] }

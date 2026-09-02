@@ -89,7 +89,11 @@ jobs:
             gitops
             infrastructure-live
             mindclade
-          permission-administration: read
+          # No administration scope: the runner uses an explicit repository
+          # allowlist rather than autodiscovery, so it never reads repository
+          # settings. workflows:write is required to update pinned action SHAs
+          # under .github/workflows; issues:write maintains the dependency
+          # dashboard.
           permission-metadata: read
           permission-contents: write
           permission-workflows: write

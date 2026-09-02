@@ -1,0 +1,40 @@
+api_version: github.mindclade.io/v1
+kind: Integration
+metadata:
+  id: renovate
+  owner_team: developer-platform
+spec:
+  type: github_app
+  managed: false
+  credential_authority: bootstrap
+  plaintext_credentials_forbidden: true
+  repository_selection: selected
+  repositories:
+    - .github
+    - bootstrap
+    - estate-ci
+    - github-config
+    - gitops
+    - infrastructure-live
+    - mindclade
+  permissions:
+    - name: contents
+      access: write
+    - name: issues
+      access: write
+    - name: metadata
+      access: read
+    - name: pull_requests
+      access: write
+    - name: workflows
+      access: write
+  events: [pull_request]
+  qualification:
+    state: blocked
+    authority: bootstrap
+  activation:
+    state: blocked
+    blockers:
+      - github-app-installation-not-qualified
+      - workload-identity-federation-not-qualified
+      - renovate-app-key-secret-not-created
