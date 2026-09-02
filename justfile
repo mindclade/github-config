@@ -57,7 +57,7 @@ python-test:
     temporary="$(mktemp -d)"; trap 'rm -rf "$temporary"' EXIT; cd compiler; go build -o "$temporary/github-configctl" ./cmd/github-configctl; cd ..; for test_file in tests/contract/test_*.py tests/plan/test_*.py tests/drift/test_*.py tests/recovery/test_*.py; do GITHUB_CONFIGCTL="$temporary/github-configctl" python3 "$test_file"; done
 
 bazel-test:
-    @bazel_args=(); if test -n "${MACOSX_DEPLOYMENT_TARGET:-}"; then bazel_args+=("--repo_env=MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}" "--action_env=MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}" "--copt=-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" "--linkopt=-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"); fi; bazel test --config=ci "${bazel_args[@]}" //:presubmit
+    @bazel_args=(); if test -n "${MACOSX_DEPLOYMENT_TARGET:-}"; then bazel_args+=("--repo_env=MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}" "--action_env=MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET}" "--copt=-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" "--linkopt=-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}"); fi; bazel test --config=ci ${bazel_args[@]+"${bazel_args[@]}"} //:presubmit
 
 policy-test:
     temporary="$(mktemp -d)"; trap 'rm -rf "$temporary"' EXIT; cd compiler; go run ./cmd/github-configctl --root .. policy-input --output "$temporary/policy-input.json"; cd ..; opa test policy; for package in least_privilege protected_rulesets workflow_sources oidc_subjects environment_approvals; do opa eval --fail --data policy --input "$temporary/policy-input.json" "count(data.github_config.$package.deny) == 0" >/dev/null; done
