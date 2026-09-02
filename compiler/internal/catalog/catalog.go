@@ -3,6 +3,9 @@
 package catalog
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +21,19 @@ import (
 	"github.com/mindclade/github-config/compiler/internal/validation"
 )
 
-const maxYAMLBytes = 4 << 20
+const (
+	maxYAMLBytes                   = 4 << 20
+	maxGeneratedPolicyBytes        = 4 << 20
+	generatedPolicyAuthority       = "mindclade/.github"
+	generatedPolicyAuthorityCommit = "b4d28faa5fde98087f60262110a43f25f6da9eb8"
+)
+
+var generatedPolicyFiles = map[string]string{
+	"generated/bazelrc.common":                   "e030d15a440dd58298a6189677876f91a24b3dbde9f1c2ec77d1591deb6555f7",
+	"generated/nix-bazel-policy.lock.json":       "2b62ba1f6d731678b97035cc89d2f1433b9c00eaa9a3b2332ceb167bc30f2f87",
+	"generated/nix-bazel-policy.nix":             "bed186e83238be6fe3e889e3725176cc7d3baa09966d076e79c990d5d719d1df",
+	"generated/toolchain-manifest.defaults.json": "95f211ac10d3b8b720299d78dee78f8e6270ccc04539177d223b833b2641c76c",
+}
 
 // Catalog is the public compiler contract. Source envelopes are intentionally
 // removed: singleton and collection values contain only their schema-validated
@@ -59,6 +74,7 @@ var sourceDefinitions = []sourceDefinition{
 	{"config/teams/computational-biology.yaml", "team.schema.json", "Team", "teams"},
 	{"config/teams/data-platform.yaml", "team.schema.json", "Team", "teams"},
 	{"config/teams/developer-platform.yaml", "team.schema.json", "Team", "teams"},
+	{"config/teams/founder-pr-bypass.yaml", "team.schema.json", "Team", "teams"},
 	{"config/teams/ml-systems.yaml", "team.schema.json", "Team", "teams"},
 	{"config/teams/platform-operations.yaml", "team.schema.json", "Team", "teams"},
 	{"config/teams/product-engineering.yaml", "team.schema.json", "Team", "teams"},
@@ -87,6 +103,7 @@ var sourceDefinitions = []sourceDefinition{
 var schemaFiles = []string{
 	"actions_policy.schema.json",
 	"environment.schema.json",
+	"founder_pr_bypass_evidence.schema.json",
 	"integration.schema.json",
 	"membership.schema.json",
 	"oidc_policy.schema.json",
@@ -207,7 +224,13 @@ func Compile(root string) (*Catalog, error) {
 			}
 		}
 	}
-	baseBytes, err := rendering.CanonicalJSON(result)
+	generatedPolicyDigest, err := validateGeneratedPolicyArtifacts(root)
+	if err != nil {
+		return nil, err
+	}
+	baseBytes, err := rendering.CanonicalJSON(map[string]any{
+		"catalog": result, "generated_policy_lock_digest": generatedPolicyDigest,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -770,7 +793,72 @@ func validateInventory(root string) error {
 	for _, name := range schemaFiles {
 		expectedSchemas[filepath.Join("schemas", "v1", name)] = struct{}{}
 	}
-	return validateExactTree(root, filepath.Join("schemas", "v1"), expectedSchemas)
+	if err := validateExactTree(root, filepath.Join("schemas", "v1"), expectedSchemas); err != nil {
+		return err
+	}
+	expectedGenerated := make(map[string]struct{}, len(generatedPolicyFiles))
+	for path := range generatedPolicyFiles {
+		expectedGenerated[filepath.Clean(path)] = struct{}{}
+	}
+	if err := validateExactTree(root, "generated", expectedGenerated); err != nil {
+		return err
+	}
+	_, err := validateGeneratedPolicyArtifacts(root)
+	return err
+}
+
+func validateGeneratedPolicyArtifacts(root string) (string, error) {
+	paths := make([]string, 0, len(generatedPolicyFiles))
+	for path := range generatedPolicyFiles {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	contents := make(map[string][]byte, len(paths))
+	for _, relative := range paths {
+		data, err := readGeneratedPolicyFile(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", relative, err)
+		}
+		digest := sha256.Sum256(data)
+		actual := hex.EncodeToString(digest[:])
+		if actual != generatedPolicyFiles[relative] {
+			return "", fmt.Errorf("%s: generated policy digest differs from immutable authority %s", relative, generatedPolicyAuthorityCommit)
+		}
+		contents[relative] = data
+	}
+	var lock map[string]any
+	if err := json.Unmarshal(contents["generated/nix-bazel-policy.lock.json"], &lock); err != nil {
+		return "", fmt.Errorf("generated policy lock is invalid JSON: %w", err)
+	}
+	authority, _ := lock["authority"].(map[string]any)
+	if authority["repository"] != generatedPolicyAuthority || authority["revision"] != generatedPolicyAuthorityCommit ||
+		lock["api_version"] != "ci.mindclade.dev/v1" || lock["kind"] != "GeneratedPolicyLock" ||
+		lock["contract_digest"] != "sha256:17cea0e202665f3253d3693672409bcfeafcbf8a81572b3934036bc3bd5cc918" {
+		return "", errors.New("generated policy lock does not bind the exact reviewed authority contract")
+	}
+	artifacts, _ := lock["artifacts"].(map[string]any)
+	for relative, expected := range map[string]string{
+		".github/actions/required-workflow-profile/profiles.generated.json": "sha256:3049581e695aa452427f935fba18954f6e97769cd594cfe13ea551ef89d3a30d",
+		"generated/bazelrc.common":                   "sha256:" + generatedPolicyFiles["generated/bazelrc.common"],
+		"generated/nix-bazel-policy.nix":             "sha256:" + generatedPolicyFiles["generated/nix-bazel-policy.nix"],
+		"generated/toolchain-manifest.defaults.json": "sha256:" + generatedPolicyFiles["generated/toolchain-manifest.defaults.json"],
+	} {
+		if artifacts[relative] != expected {
+			return "", fmt.Errorf("generated policy lock artifact %q differs from its reviewed digest", relative)
+		}
+	}
+	return "sha256:" + generatedPolicyFiles["generated/nix-bazel-policy.lock.json"], nil
+}
+
+func readGeneratedPolicyFile(path string) ([]byte, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxGeneratedPolicyBytes {
+		return nil, fmt.Errorf("generated policy must be a regular non-symlink file no larger than %d bytes", maxGeneratedPolicyBytes)
+	}
+	return os.ReadFile(path)
 }
 
 func validateExactTree(root, relativeDirectory string, expected map[string]struct{}) error {

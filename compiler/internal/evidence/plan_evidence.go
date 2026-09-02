@@ -103,6 +103,11 @@ var managedWritePaths = map[string][]string{
 		"/rules/*/required_status_checks/*/do_not_enforce_on_create",
 		"/rules/*/required_status_checks/*/required_check", "/rules/*/required_status_checks/*/required_check/*/context",
 		"/rules/*/required_status_checks/*/required_check/*/integration_id",
+		"/rules/*/required_workflows", "/rules/*/required_workflows/*/do_not_enforce_on_create",
+		"/rules/*/required_workflows/*/required_workflow",
+		"/rules/*/required_workflows/*/required_workflow/*/repository_id",
+		"/rules/*/required_workflows/*/required_workflow/*/path",
+		"/rules/*/required_workflows/*/required_workflow/*/ref",
 	},
 	// github_organization_settings is intentionally not instantiated: billing
 	// identity is outside catalog v1, so its structural write surface is empty.
@@ -116,6 +121,17 @@ var managedWritePaths = map[string][]string{
 		"/security_and_analysis/*/advanced_security", "/security_and_analysis/*/advanced_security/*/status",
 		"/security_and_analysis/*/secret_scanning", "/security_and_analysis/*/secret_scanning/*/status",
 		"/security_and_analysis/*/secret_scanning_push_protection", "/security_and_analysis/*/secret_scanning_push_protection/*/status",
+	},
+	"github_repository_ruleset": {
+		"/name", "/repository", "/target", "/enforcement", "/bypass_actors",
+		"/conditions", "/conditions/*/ref_name", "/conditions/*/ref_name/*/include",
+		"/conditions/*/ref_name/*/include/*", "/conditions/*/ref_name/*/exclude",
+		"/conditions/*/ref_name/*/exclude/*", "/rules", "/rules/*/merge_queue",
+		"/rules/*/merge_queue/*/check_response_timeout_minutes",
+		"/rules/*/merge_queue/*/grouping_strategy", "/rules/*/merge_queue/*/max_entries_to_build",
+		"/rules/*/merge_queue/*/max_entries_to_merge", "/rules/*/merge_queue/*/merge_method",
+		"/rules/*/merge_queue/*/min_entries_to_merge",
+		"/rules/*/merge_queue/*/min_entries_to_merge_wait_minutes",
 	},
 	"github_repository_collaborator":    {"/repository", "/username", "/permission", "/permission_diff_suppression"},
 	"github_repository_custom_property": {"/repository", "/property_name", "/property_type", "/property_value", "/property_value/*"},
@@ -466,7 +482,7 @@ func allowsFounderPublicBootstrap(catalog map[string]any, createdEpoch int64) bo
 	production, productionKnown := exception["production_authority"].(bool)
 	minimumAccounts, minimumKnown := positiveJSONInteger(exception["minimum_distinct_actor_accounts"])
 	accounts := stringSlice(exception["github_actor_accounts"])
-	if fmt.Sprint(organization["estate_profile"]) != "github-free-public" ||
+	if fmt.Sprint(organization["estate_profile"]) != "github-enterprise-cloud-mixed" ||
 		fmt.Sprint(exception["id"]) != "FBE-0001" || fmt.Sprint(exception["state"]) != "UNUSED" ||
 		fmt.Sprint(exception["scope"]) != "founder-bootstrap-only" ||
 		fmt.Sprint(exception["workflow_ref"]) != "mindclade/github-config/.github/workflows/protected-apply.yml@refs/heads/main" ||
@@ -1864,6 +1880,10 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 			if !catalogRulesetAfterState(address, after, catalog, observed, phase) {
 				add("unknown_change", "physical ruleset after-state does not exactly match the phase-specific compiled catalog projection")
 			}
+		case "github_repository_ruleset":
+			if !catalogRepositoryRulesetAfterState(address, after, catalog, observed, phase) {
+				add("unknown_change", "repository merge-queue ruleset after-state does not exactly match the phase-specific compiled catalog projection")
+			}
 		}
 	}
 	if catalog != nil && actionClass == "delete" {
@@ -2105,6 +2125,8 @@ func governedRetirementAddress(resourceType, address string) bool {
 		base = "module.repository_environments.github_repository_environment_deployment_policy.this"
 	case "github_organization_ruleset":
 		base = "module.rulesets.github_organization_ruleset.this"
+	case "github_repository_ruleset":
+		base = "module.rulesets.github_repository_ruleset.merge_queue"
 	case "github_team":
 		base = "module.team_access.github_team.this"
 	default:
@@ -2929,31 +2951,29 @@ func catalogRulesetAfterState(address string, after, catalog, observed map[strin
 	if !ok || !exactIndexedAddress(address, "module.rulesets.github_organization_ruleset.this", physicalKey) {
 		return false
 	}
-	logicalKey := strings.TrimSuffix(physicalKey, "--creator-gate")
-	creatorGate := logicalKey != physicalKey
+	logicalKey, role := organizationRulesetIdentity(physicalKey)
 	rulesets, _ := catalog["rulesets"].(map[string]any)
 	ruleset, _ := rulesets[logicalKey].(map[string]any)
 	if ruleset == nil {
 		return false
 	}
 	rules, _ := ruleset["rules"].(map[string]any)
-	creationRestricted := boolMapField(rules, "creation_restricted")
-	if creatorGate && (stringMapField(ruleset, "target") != "tag" || !creationRestricted) {
+	if !physicalRulesetRoleAllowed(role, ruleset, rules) {
 		return false
 	}
 	effectiveName := stringMapField(ruleset, "name")
 	if effectiveName == "" {
 		effectiveName = logicalKey
 	}
-	if creatorGate {
-		effectiveName += "-creator-gate"
+	if role != "immutability" {
+		effectiveName += "-" + strings.ReplaceAll(role, "_", "-")
 	}
 	enforcement := stringMapField(ruleset, "enforcement")
 	switch phase {
 	case "adopt":
 		enforcement = observedRulesetEnforcement(observed, "", effectiveName, "disabled")
 	case "foundation":
-		enforcement = observedRulesetEnforcement(observed, "", effectiveName, "evaluate")
+		enforcement = "evaluate"
 	case "enforce":
 	default:
 		return false
@@ -2967,11 +2987,11 @@ func catalogRulesetAfterState(address string, after, catalog, observed map[strin
 		}
 		repositoryNames = append(repositoryNames, name)
 	}
-	expectedRules, rulesKnown := physicalRulesetRules(rules, creatorGate, phase)
+	expectedRules, rulesKnown := physicalRulesetRules(rules, role, phase, catalog, observed)
 	if !rulesKnown {
 		return false
 	}
-	expectedActors, actorsKnown := physicalRulesetActors(ruleset, rules, creatorGate, phase, catalog, observed)
+	expectedActors, actorsKnown := physicalRulesetActors(ruleset, rules, role, phase, catalog, observed)
 	if !actorsKnown {
 		return false
 	}
@@ -2989,6 +3009,107 @@ func catalogRulesetAfterState(address string, after, catalog, observed map[strin
 			}},
 		}},
 		"rules": []any{expectedRules},
+	}
+	afterProjection := make(map[string]any, len(expected))
+	for key := range expected {
+		value, exists := after[key]
+		if !exists {
+			return false
+		}
+		afterProjection[key] = value
+	}
+	return canonicalSemanticEqual(afterProjection, expected)
+}
+
+func organizationRulesetIdentity(physicalKey string) (string, string) {
+	for _, role := range []string{"required_workflow", "pr_governance", "integrity", "creator_gate"} {
+		suffix := "--" + strings.ReplaceAll(role, "_", "-")
+		if logicalKey := strings.TrimSuffix(physicalKey, suffix); logicalKey != physicalKey {
+			return logicalKey, role
+		}
+	}
+	return physicalKey, "immutability"
+}
+
+func physicalRulesetRoleAllowed(role string, ruleset, rules map[string]any) bool {
+	target := stringMapField(ruleset, "target")
+	switch role {
+	case "integrity", "pr_governance", "required_workflow":
+		return target == "branch"
+	case "creator_gate":
+		return target == "tag" && boolMapField(rules, "creation_restricted")
+	case "immutability":
+		return target == "tag"
+	default:
+		return false
+	}
+}
+
+func catalogRepositoryRulesetAfterState(address string, after, catalog, observed map[string]any, phase string) bool {
+	if after == nil || catalog == nil {
+		return false
+	}
+	physicalKey, ok := terraformInstanceKey(address)
+	if !ok || !exactIndexedAddress(address, "module.rulesets.github_repository_ruleset.merge_queue", physicalKey) {
+		return false
+	}
+	const delimiter = "--merge-queue--"
+	delimiterIndex := strings.LastIndex(physicalKey, delimiter)
+	if delimiterIndex <= 0 || delimiterIndex+len(delimiter) == len(physicalKey) {
+		return false
+	}
+	logicalKey := physicalKey[:delimiterIndex]
+	repositoryReference := physicalKey[delimiterIndex+len(delimiter):]
+	rulesets, _ := catalog["rulesets"].(map[string]any)
+	ruleset, _ := rulesets[logicalKey].(map[string]any)
+	rules, _ := ruleset["rules"].(map[string]any)
+	if ruleset == nil || stringMapField(ruleset, "target") != "branch" || !boolMapField(rules, "merge_queue") {
+		return false
+	}
+	repositoryAllowed := false
+	for _, rawReference := range anySlice(ruleset["repositories"]) {
+		if reference, _ := rawReference.(string); reference == repositoryReference {
+			repositoryAllowed = true
+			break
+		}
+	}
+	if !repositoryAllowed {
+		return false
+	}
+	repositoryName := catalogRepositoryName(repositoryReference, catalog)
+	if repositoryName == "" {
+		return false
+	}
+	effectiveName := stringMapField(ruleset, "name")
+	if effectiveName == "" {
+		effectiveName = logicalKey
+	}
+	effectiveName += "-merge-queue"
+	enforcement := "disabled"
+	switch phase {
+	case "adopt":
+		enforcement = observedRulesetEnforcement(observed, repositoryName, effectiveName, "disabled")
+	case "foundation":
+	case "enforce":
+		enforcement = stringMapField(ruleset, "enforcement")
+	default:
+		return false
+	}
+	expected := map[string]any{
+		"name": effectiveName, "repository": repositoryName, "target": "branch", "enforcement": enforcement,
+		"bypass_actors": []any{},
+		"conditions": []any{map[string]any{
+			"ref_name": []any{map[string]any{
+				"include": anySlice(ruleset["include_refs"]), "exclude": anySlice(ruleset["exclude_refs"]),
+			}},
+		}},
+		"rules": []any{map[string]any{
+			"merge_queue": []any{map[string]any{
+				"check_response_timeout_minutes": 30, "grouping_strategy": "ALLGREEN",
+				"max_entries_to_build": 2, "max_entries_to_merge": 1, "merge_method": "SQUASH",
+				"min_entries_to_merge": 1, "min_entries_to_merge_wait_minutes": 0,
+			}},
+		}},
 	}
 	afterProjection := make(map[string]any, len(expected))
 	for key := range expected {
@@ -3020,40 +3141,37 @@ func observedRulesetEnforcement(observed map[string]any, repositoryName, ruleset
 	return fallback
 }
 
-func physicalRulesetRules(source map[string]any, creatorGate bool, phase string) (map[string]any, bool) {
+func physicalRulesetRules(
+	source map[string]any, role, phase string, catalog, observed map[string]any,
+) (map[string]any, bool) {
 	if source == nil {
 		return nil, false
 	}
-	sourceCreation := boolMapField(source, "creation_restricted")
-	creation := phase == "enforce" && sourceCreation
-	update := boolMapField(source, "update")
-	deletion := boolMapField(source, "deletion")
-	nonFastForward := boolMapField(source, "non_fast_forward")
-	linearHistory := boolMapField(source, "required_linear_history")
-	signatures := boolMapField(source, "required_signatures")
-	pullRequest := source["pull_request"]
-	statusChecks := source["required_status_checks"]
-	if creatorGate {
-		creation = phase == "enforce"
-		update = false
-		deletion = false
-		nonFastForward = false
-		linearHistory = false
-		signatures = false
-		pullRequest = nil
-		statusChecks = nil
-	} else if sourceCreation {
-		creation = false
-		linearHistory = false
-		signatures = false
-		pullRequest = nil
-		statusChecks = nil
-	}
 	expected := map[string]any{
-		"creation": creation, "update": update, "deletion": deletion,
-		"non_fast_forward": nonFastForward, "required_linear_history": linearHistory,
-		"required_signatures": signatures,
-		"pull_request":        []any{}, "required_status_checks": []any{},
+		"creation": false, "update": false, "deletion": false, "non_fast_forward": false,
+		"required_linear_history": false, "required_signatures": false,
+		"pull_request": []any{}, "required_status_checks": []any{}, "required_workflows": []any{},
+	}
+	var pullRequest, statusChecks, requiredWorkflow any
+	switch role {
+	case "immutability":
+		expected["update"] = boolMapField(source, "update")
+		expected["deletion"] = boolMapField(source, "deletion")
+		expected["non_fast_forward"] = boolMapField(source, "non_fast_forward")
+	case "creator_gate":
+		expected["creation"] = phase == "enforce"
+	case "integrity":
+		expected["deletion"] = boolMapField(source, "deletion")
+		expected["non_fast_forward"] = boolMapField(source, "non_fast_forward")
+		expected["required_linear_history"] = boolMapField(source, "required_linear_history")
+		expected["required_signatures"] = boolMapField(source, "required_signatures")
+	case "pr_governance":
+		pullRequest = source["pull_request"]
+	case "required_workflow":
+		statusChecks = source["required_status_checks"]
+		requiredWorkflow = source["required_workflow"]
+	default:
+		return nil, false
 	}
 	if pull, ok := pullRequest.(map[string]any); ok {
 		expected["pull_request"] = []any{map[string]any{
@@ -3085,12 +3203,42 @@ func physicalRulesetRules(source map[string]any, creatorGate bool, phase string)
 	} else if statusChecks != nil {
 		return nil, false
 	}
+	if workflow, ok := requiredWorkflow.(map[string]any); ok {
+		repositoryReference := stringMapField(workflow, "repository")
+		repositoryName := catalogRepositoryName(repositoryReference, catalog)
+		repositoryID, idKnown := observedRepositoryID(observed, repositoryReference, repositoryName)
+		if !idKnown || stringMapField(workflow, "path") == "" || stringMapField(workflow, "ref") == "" {
+			return nil, false
+		}
+		expected["required_workflows"] = []any{map[string]any{
+			"do_not_enforce_on_create": false,
+			"required_workflow": []any{map[string]any{
+				"repository_id": repositoryID, "path": workflow["path"], "ref": workflow["ref"],
+			}},
+		}}
+	} else if requiredWorkflow != nil {
+		return nil, false
+	}
 	return expected, true
 }
 
-func physicalRulesetActors(ruleset, rules map[string]any, creatorGate bool, phase string, catalog, observed map[string]any) ([]any, bool) {
+func observedRepositoryID(observed map[string]any, reference, name string) (int64, bool) {
+	if observed == nil {
+		return 0, false
+	}
+	repositories, _ := observed["repositories"].(map[string]any)
+	repository, _ := repositories[name].(map[string]any)
+	if repository == nil {
+		repository, _ = repositories[reference].(map[string]any)
+	}
+	return positiveJSONInteger(repository["id"])
+}
+
+func physicalRulesetActors(
+	ruleset, rules map[string]any, role, phase string, catalog, observed map[string]any,
+) ([]any, bool) {
 	result := make([]any, 0)
-	if !creatorGate {
+	if role == "pr_governance" {
 		for _, rawActor := range anySlice(ruleset["bypass_actors"]) {
 			actor, _ := rawActor.(map[string]any)
 			resolved, ok := resolveRulesetActor(actor, catalog, observed)
@@ -3100,7 +3248,7 @@ func physicalRulesetActors(ruleset, rules map[string]any, creatorGate bool, phas
 			result = append(result, resolved)
 		}
 	}
-	if creatorGate && phase == "enforce" {
+	if role == "creator_gate" && phase == "enforce" {
 		for _, rawIntegration := range anySlice(rules["authorized_creator_integrations"]) {
 			integration, _ := rawIntegration.(string)
 			resolved, ok := resolveRulesetActor(map[string]any{

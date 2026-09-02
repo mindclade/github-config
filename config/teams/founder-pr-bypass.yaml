@@ -1,0 +1,20 @@
+api_version: github.mindclade.io/v1
+kind: Team
+metadata:
+  id: founder-pr-bypass
+  owner_team: security
+spec:
+  name: founder-pr-bypass
+  description: Nonsecret founder identity group for evidence-gated pull request bypass.
+  privacy: closed
+  parent_team: null
+  members:
+    - login: mindclade-founder
+      role: maintainer
+    - login: robpearc
+      role: maintainer
+  activation:
+    state: blocked
+    blockers:
+      - github-enterprise-cloud-not-qualified
+      - required-workflow-evidence-not-qualified

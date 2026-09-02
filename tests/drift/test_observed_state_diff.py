@@ -73,6 +73,8 @@ class ObservedStateDiffTest(unittest.TestCase):
                 rule_types.append("pull_request")
             if "required_status_checks" in rules:
                 rule_types.append("required_status_checks")
+            if "required_workflow" in rules:
+                rule_types.append("workflows")
             projected["rule_types"] = sorted(rule_types)
             projected_rules = pick(
                 rules,
@@ -107,6 +109,10 @@ class ObservedStateDiffTest(unittest.TestCase):
                         pick(check, ["context", "integration_id"]) for check in required["checks"]
                     ],
                 }
+            if "required_workflow" in rules:
+                projected_rules["required_workflow"] = pick(
+                    rules["required_workflow"], ["repository", "path", "ref"]
+                )
             projected["rules"] = projected_rules
             return projected
 
@@ -903,6 +909,13 @@ class ObservedStateDiffTest(unittest.TestCase):
                     value = {"enabled_repositories": "none"}
                 elif path == "/orgs/mindclade/actions/permissions/fork-pr-contributor-approval":
                     value = {"approval_policy": "first_time_contributors_new_to_github"}
+                elif path == "/orgs/mindclade/actions/secrets":
+                    value = {
+                        "total_count": 1,
+                        "secrets": [{"name": "ORG_TOKEN", "value": "do-not-emit"}],
+                    }
+                elif path == "/orgs/mindclade/actions/variables":
+                    value = {"total_count": 0, "variables": []}
                 elif path == "/orgs/mindclade/actions/oidc/customization/sub":
                     value = {
                         "include_claim_keys": ["repo", "context", "workflow_ref", "workflow_sha"],
@@ -928,6 +941,17 @@ class ObservedStateDiffTest(unittest.TestCase):
                     ]
                 elif path == "/orgs/mindclade/installations":
                     value = {"total_count": 0, "installations": []}
+                elif path == "/search/issues":
+                    value = {"total_count": 0, "items": []}
+                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/secrets"):
+                    value = {
+                        "total_count": 1,
+                        "secrets": [{"name": "REPOSITORY_TOKEN", "value": "do-not-emit"}],
+                    }
+                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/variables"):
+                    value = {"total_count": 0, "variables": []}
+                elif path.startswith("/repos/mindclade/") and path.endswith("/rulesets"):
+                    value = []
                 elif path.startswith("/repos/mindclade/") and path.endswith(
                     "/actions/oidc/customization/sub"
                 ):
@@ -1068,7 +1092,16 @@ class ObservedStateDiffTest(unittest.TestCase):
                     },
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                observed = json.loads(output.read_text())
+                observed_text = output.read_text()
+                self.assertNotIn("do-not-emit", observed_text)
+                observed = json.loads(observed_text)
+                sensitive_inventory = observed["actions_sensitive_inventory"]
+                self.assertEqual(sensitive_inventory["status"], "healthy")
+                self.assertEqual(sensitive_inventory["organization"]["count"], 1)
+                self.assertEqual(
+                    len(sensitive_inventory["organization"]["identifier_digests"]),
+                    1,
+                )
                 self.assertEqual(
                     {path: server.retry_counts[path] for path in server.retry_once},
                     dict.fromkeys(server.retry_once, 2),

@@ -16,3 +16,9 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+      - id: workflow-contract
+        name: Validate reusable workflow contracts
+        entry: just workflow-contract
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

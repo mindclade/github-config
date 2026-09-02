@@ -58,6 +58,7 @@ class CatalogSchemaTest(unittest.TestCase):
         root = Path(temporary.name)
         shutil.copytree(ROOT / "config", root / "config")
         shutil.copytree(ROOT / "schemas", root / "schemas")
+        shutil.copytree(ROOT / "generated", root / "generated")
         shutil.copy2(ROOT / "component.yaml", root / "component.yaml")
         self.addCleanup(temporary.cleanup)
         return root
@@ -78,13 +79,68 @@ class CatalogSchemaTest(unittest.TestCase):
         ):
             self.assertIn(required, module)
 
-    def test_public_free_estate_and_founder_exception_are_exact(self):
+    def test_generated_ci_policy_is_exactly_authority_bound(self):
+        revision = "b4d28faa5fde98087f60262110a43f25f6da9eb8"
+        policy_lock = json.loads(
+            (ROOT / "generated" / "nix-bazel-policy.lock.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            policy_lock["authority"],
+            {"repository": "mindclade/.github", "revision": revision},
+        )
+        self.assertEqual(
+            (ROOT / ".bazelrc").read_text(encoding="utf-8"),
+            "import %workspace%/generated/bazelrc.common\n",
+        )
+        self.assertIn(
+            "policy = import ./generated/nix-bazel-policy.nix;",
+            (ROOT / "flake.nix").read_text(encoding="utf-8"),
+        )
+
+        root = self.temporary_catalog()
+        generated = root / "generated" / "bazelrc.common"
+        generated.write_text(generated.read_text(encoding="utf-8") + "# drift\n")
+        result = invoke("validate", root=root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("generated policy digest differs from immutable authority", result.stderr)
+
+    def test_enterprise_mixed_estate_and_founder_contracts_are_exact(self):
         result = invoke("compile", "--output", "-")
         self.assertEqual(result.returncode, 0, result.stderr)
         catalog = json.loads(result.stdout)
         organization = catalog["organization"]
         exception = organization["founder_bootstrap_exception"]
-        self.assertEqual(organization["estate_profile"], "github-free-public")
+        self.assertEqual(organization["estate_profile"], "github-enterprise-cloud-mixed")
+        self.assertEqual(
+            organization["founder_pull_request_bypass"],
+            {
+                "contract": "founder-pr-bypass.v1",
+                "entitlement_id": "founder-pr-bypass",
+                "team": "founder-pr-bypass",
+                "principal_id": "founder-primary",
+                "github_actor_accounts": ["mindclade-founder", "robpearc"],
+                "durable": True,
+                "bypass_mode": "pull_request",
+                "self_authored_pull_requests": True,
+                "all_repositories": True,
+                "all_paths": True,
+                "label": "founder-bypass",
+                "comment_marker": "<!-- founder-pr-bypass:v1 -->",
+                "head_sha_required": True,
+                "reason_required": True,
+                "author_must_map_to_principal": True,
+                "foundation_authority": False,
+                "production_authority": False,
+                "fbe_exception_id": "FBE-0001",
+                "activation": {
+                    "state": "blocked",
+                    "blockers": [
+                        "github-enterprise-cloud-not-qualified",
+                        "required-workflow-evidence-not-qualified",
+                    ],
+                },
+            },
+        )
         self.assertEqual(
             exception,
             {
@@ -335,16 +391,18 @@ class CatalogSchemaTest(unittest.TestCase):
             manifest,
             re.MULTILINE,
         )
+        activation_section = manifest[manifest.index("  activation:\n") :]
         blockers_block = re.search(
             r"^    blockers:(?: \[\])?\n((?:      - [a-z0-9-]+\n)*)",
-            manifest,
+            activation_section,
             re.MULTILINE,
         )
-        activation_state = re.search(
+        activation_states = re.findall(
             r"^    state: ([A-Z_]+)$",
             manifest,
             re.MULTILINE,
         )
+        activation_state = activation_states[-1] if activation_states else None
         activation_exception = re.search(
             r"^    exceptionRef: ([A-Z]+-[0-9]+)$",
             manifest,
@@ -357,7 +415,7 @@ class CatalogSchemaTest(unittest.TestCase):
         bootstrap_active_ids = set(re.findall(r"- ([a-z0-9-]+)", active_block.group(1)))
         bootstrap_gated_ids = set(re.findall(r"- ([a-z0-9-]+)", gated_block.group(1)))
         bootstrap_blockers = re.findall(r"- ([a-z0-9-]+)", blockers_block.group(1))
-        if activation_state.group(1) == "FOUNDER_BOOTSTRAPPED":
+        if activation_state == "FOUNDER_BOOTSTRAPPED":
             self.assertIsNotNone(activation_exception)
             self.assertEqual(activation_exception.group(1), "FBE-0001")
             self.assertEqual(
@@ -389,7 +447,7 @@ class CatalogSchemaTest(unittest.TestCase):
             expected_github_config_activation = "true"
             expected_infrastructure_drift_activation = "false"
             expected_ci_evidence_activation = "false"
-        elif activation_state.group(1) == "CONNECTED_QUALIFIED":
+        elif activation_state == "CONNECTED_QUALIFIED":
             self.assertIsNone(activation_exception)
             self.assertEqual(
                 bootstrap_active_ids,
@@ -402,7 +460,7 @@ class CatalogSchemaTest(unittest.TestCase):
             expected_infrastructure_drift_activation = "true"
             expected_ci_evidence_activation = "true"
         else:
-            self.assertEqual(activation_state.group(1), "BLOCKED")
+            self.assertEqual(activation_state, "BLOCKED")
             self.assertIsNone(activation_exception)
             self.assertEqual(bootstrap_active_ids, infrastructure_ids | bootstrap_ids)
             self.assertEqual(bootstrap_gated_ids, gated_ids)
@@ -810,6 +868,10 @@ class CatalogSchemaTest(unittest.TestCase):
             "config/oidc-policy.yaml",
             "config/members.yaml",
             "config/outside-collaborators.yaml",
+            "generated/bazelrc.common",
+            "generated/nix-bazel-policy.lock.json",
+            "generated/nix-bazel-policy.nix",
+            "generated/toolchain-manifest.defaults.json",
             *{
                 f"config/teams/{name}.yaml"
                 for name in (
@@ -818,6 +880,7 @@ class CatalogSchemaTest(unittest.TestCase):
                     "computational-biology",
                     "data-platform",
                     "developer-platform",
+                    "founder-pr-bypass",
                     "ml-systems",
                     "platform-operations",
                     "product-engineering",
@@ -871,15 +934,23 @@ class CatalogSchemaTest(unittest.TestCase):
                     "repository",
                     "ruleset",
                     "environment",
+                    "founder_pr_bypass_evidence",
                     "integration",
                 )
             },
             "compiler/cmd/github-configctl/main.go",
             "compiler/internal/catalog/catalog.go",
-            "compiler/internal/validation/validation.go",
-            "compiler/internal/rendering/rendering.go",
             "compiler/internal/diff/github_diff.go",
+            "compiler/internal/diff/github_diff_test.go",
+            "compiler/internal/doctor/doctor.go",
+            "compiler/internal/doctor/doctor_test.go",
             "compiler/internal/evidence/plan_evidence.go",
+            "compiler/internal/founderbypass/founder_bypass.go",
+            "compiler/internal/founderbypass/founder_bypass_test.go",
+            "compiler/internal/rendering/rendering.go",
+            "compiler/internal/validation/validation.go",
+            "compiler/internal/workflowcontract/workflow_contract.go",
+            "compiler/internal/workflowcontract/workflow_contract_test.go",
             "compiler/go.mod",
             "compiler/go.sum",
             "compiler/BUILD.bazel",
@@ -968,6 +1039,8 @@ class CatalogSchemaTest(unittest.TestCase):
             for name in files:
                 path = Path(directory) / name
                 relative = path.relative_to(ROOT).as_posix()
+                if relative == ".git":
+                    continue
                 if name == ".DS_Store" or name.endswith((".pyc", ".pyo")):
                     continue
                 if relative_directory == Path() and name.startswith("bazel-") and path.is_symlink():

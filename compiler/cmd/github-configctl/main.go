@@ -17,9 +17,12 @@ import (
 
 	"github.com/mindclade/github-config/compiler/internal/catalog"
 	githubdiff "github.com/mindclade/github-config/compiler/internal/diff"
+	"github.com/mindclade/github-config/compiler/internal/doctor"
 	"github.com/mindclade/github-config/compiler/internal/evidence"
+	"github.com/mindclade/github-config/compiler/internal/founderbypass"
 	"github.com/mindclade/github-config/compiler/internal/rendering"
 	"github.com/mindclade/github-config/compiler/internal/validation"
+	"github.com/mindclade/github-config/compiler/internal/workflowcontract"
 )
 
 const usage = `Usage:
@@ -28,6 +31,9 @@ const usage = `Usage:
   github-configctl [--root REPOSITORY] policy-input --output PATH
   github-configctl [--root REPOSITORY] observe --organization ORG --output PATH
   github-configctl [--root REPOSITORY] diff --desired PATH --observed PATH [--output PATH]
+  github-configctl [--root REPOSITORY] doctor [--organization ORG | --observed PATH] --output PATH --markdown-output PATH [--authority-root PATH] [--require-authorities]
+  github-configctl [--root REPOSITORY] workflow-contract [--authority-root PATH] [--require-authorities] [--candidate-repository NAME --candidate-root PATH] [--output PATH]
+  github-configctl [--root REPOSITORY] founder-bypass-policy --output PATH
   github-configctl [--root REPOSITORY] evidence --plan PATH [--plan-file PATH] [--catalog PATH] [--observed PATH] [--phase PHASE] --output PATH
   github-configctl [--root REPOSITORY] verify-evidence --input PATH
   github-configctl [--root REPOSITORY] preflight --desired PATH --observed PATH [--phase adopt|foundation|enforce] [--output PATH]
@@ -66,6 +72,12 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		return runObserve(root, commandArguments, stdout, stderr)
 	case "diff":
 		return runDiff(commandArguments, stdout, stderr)
+	case "doctor":
+		return runDoctor(root, commandArguments, stdout, stderr)
+	case "workflow-contract":
+		return runWorkflowContract(root, commandArguments, stdout, stderr)
+	case "founder-bypass-policy":
+		return runFounderBypassPolicy(root, commandArguments, stdout, stderr)
 	case "evidence":
 		return runEvidence(root, commandArguments, stdout, stderr)
 	case "verify-evidence":
@@ -76,6 +88,140 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "github-configctl: unknown command %q\n%s", command, usage)
 		return 1
 	}
+}
+
+func runFounderBypassPolicy(root string, arguments []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("founder-bypass-policy", stderr)
+	output := flags.String("output", "", "founder bypass policy artifact path")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+		return 1
+	}
+	if *output == "" {
+		return reportError(stderr, errors.New("founder-bypass-policy requires --output"))
+	}
+	compiled, err := catalog.Compile(root)
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	policy, err := founderbypass.Policy(compiled)
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	if err := rendering.WriteJSON(*output, policy, stdout); err != nil {
+		return reportError(stderr, err)
+	}
+	return 0
+}
+
+func runDoctor(root string, arguments []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("doctor", stderr)
+	organization := flags.String("organization", "", "GitHub organization login; defaults to the catalog")
+	observedPath := flags.String("observed", "", "optional existing observed-state JSON")
+	output := flags.String("output", "", "doctor JSON report path")
+	markdownOutput := flags.String("markdown-output", "", "doctor Markdown report path")
+	authorityRoot := flags.String("authority-root", os.Getenv("MINDCLADE_AUTHORITY_ROOT"), "immutable authority checkout root")
+	requireAuthorities := flags.Bool("require-authorities", false, "require every reviewed workflow authority checkout")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+		return 1
+	}
+	if *output == "" || *markdownOutput == "" {
+		return reportError(stderr, errors.New("doctor requires --output and --markdown-output"))
+	}
+	if *output == "-" && *markdownOutput == "-" {
+		return reportError(stderr, errors.New("doctor JSON and Markdown outputs cannot both use stdout"))
+	}
+	compiled, err := catalog.Compile(root)
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	desired := compiled.AsMap()
+	configuredOrganization, _ := compiled.Organization["organization_login"].(string)
+	if *organization == "" {
+		*organization = configuredOrganization
+	}
+	if *organization == "" || !strings.EqualFold(*organization, configuredOrganization) {
+		return reportError(stderr, errors.New("doctor organization must exactly match the compiled catalog"))
+	}
+	contract, contractErr := workflowcontract.Validate(workflowcontract.Options{
+		Root: root, AuthorityRoot: *authorityRoot, RequireAuthorities: *requireAuthorities,
+	})
+	if contractErr != nil {
+		report := doctor.OperationalFailure(compiled.SourceDigest, *organization, "workflow_contract")
+		return writeDoctor(report, *output, *markdownOutput, stdout, stderr)
+	}
+	var observed map[string]any
+	if *observedPath != "" {
+		observed, err = readJSONPath(*observedPath)
+	} else {
+		repositories := make([]string, 0, len(compiled.Repositories))
+		for id, value := range compiled.Repositories {
+			spec, _ := value.(map[string]any)
+			name, _ := spec["name"].(string)
+			if name == "" {
+				name = id
+			}
+			repositories = append(repositories, name)
+		}
+		sort.Strings(repositories)
+		contextWithTimeout, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		observed, err = githubdiff.Observe(
+			contextWithTimeout, *organization, os.Getenv("GITHUB_API_URL"),
+			os.Getenv("GITHUB_TOKEN"), repositories, desired,
+		)
+	}
+	if err != nil {
+		report := doctor.OperationalFailure(compiled.SourceDigest, *organization, "observation")
+		return writeDoctor(report, *output, *markdownOutput, stdout, stderr)
+	}
+	report := doctor.Build(desired, observed, contract)
+	return writeDoctor(report, *output, *markdownOutput, stdout, stderr)
+}
+
+func writeDoctor(report *doctor.Report, output, markdownOutput string, stdout, stderr io.Writer) int {
+	if err := rendering.WriteJSON(output, report, stdout); err != nil {
+		return reportError(stderr, err)
+	}
+	if err := rendering.WriteText(markdownOutput, doctor.Markdown(report), stdout); err != nil {
+		return reportError(stderr, err)
+	}
+	switch report.Status {
+	case "healthy":
+		return 0
+	case "drift":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func runWorkflowContract(root string, arguments []string, stdout, stderr io.Writer) int {
+	flags := newFlagSet("workflow-contract", stderr)
+	authorityRoot := flags.String("authority-root", os.Getenv("MINDCLADE_AUTHORITY_ROOT"), "immutable authority checkout root")
+	requireAuthorities := flags.Bool("require-authorities", false, "fail when a reviewed authority checkout is unavailable")
+	candidateRepository := flags.String("candidate-repository", "", "optional repository name for a candidate overlay")
+	candidateRoot := flags.String("candidate-root", "", "optional candidate repository checkout")
+	output := flags.String("output", "-", "workflow contract report path")
+	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
+		return 1
+	}
+	if (*candidateRepository == "") != (*candidateRoot == "") {
+		return reportError(stderr, errors.New("workflow-contract candidate overlay requires both --candidate-repository and --candidate-root"))
+	}
+	report, err := workflowcontract.Validate(workflowcontract.Options{
+		Root: root, AuthorityRoot: *authorityRoot, RequireAuthorities: *requireAuthorities,
+		CandidateRepository: *candidateRepository, CandidateRoot: *candidateRoot,
+	})
+	if err != nil {
+		return reportError(stderr, err)
+	}
+	if err := rendering.WriteJSON(*output, report, stdout); err != nil {
+		return reportError(stderr, err)
+	}
+	if report.Status != "valid" {
+		return 1
+	}
+	return 0
 }
 
 func runPolicyInput(root string, arguments []string, stdout, stderr io.Writer) int {

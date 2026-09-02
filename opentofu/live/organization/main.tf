@@ -238,6 +238,23 @@ variable "adopted_ruleset_ids" {
   }
 }
 
+variable "adopted_repository_ruleset_ids" {
+  description = "Reviewed repository:numeric-ID import bindings for pre-existing merge-queue rulesets."
+  type        = map(string)
+  default     = {}
+}
+
+variable "adopted_repository_ruleset_enforcements" {
+  description = "Reviewed enforcement modes for imported repository merge-queue rulesets."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for enforcement in values(var.adopted_repository_ruleset_enforcements) : contains(["disabled", "active"], enforcement)])
+    error_message = "Imported repository ruleset enforcement must be disabled or active."
+  }
+}
+
 variable "adopted_ruleset_enforcements" {
   description = "Exact live enforcement values paired with adopted organization ruleset IDs."
   type        = map(string)
@@ -643,13 +660,15 @@ module "team_access" {
 module "rulesets" {
   source = "../../modules/ruleset"
 
-  rulesets                               = var.catalog.rulesets
-  repository_names                       = module.repository_governance.repository_names
-  team_ids                               = module.team_access.team_ids
-  rollout_phase                          = var.rollout_phase
-  adopted_ruleset_enforcements           = var.adopted_ruleset_enforcements
-  qualified_integration_actor_ids        = var.qualified_integration_actor_ids
-  qualified_status_check_integration_ids = var.qualified_status_check_integration_ids
+  rulesets                                = var.catalog.rulesets
+  repository_names                        = module.repository_governance.repository_names
+  repository_ids                          = module.repository_governance.repository_ids
+  team_ids                                = module.team_access.team_ids
+  rollout_phase                           = var.rollout_phase
+  adopted_ruleset_enforcements            = var.adopted_ruleset_enforcements
+  adopted_repository_ruleset_enforcements = var.adopted_repository_ruleset_enforcements
+  qualified_integration_actor_ids         = var.qualified_integration_actor_ids
+  qualified_status_check_integration_ids  = var.qualified_status_check_integration_ids
 
   depends_on = [module.repository_environments]
 }

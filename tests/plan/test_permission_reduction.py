@@ -486,6 +486,16 @@ class PermissionReductionTest(unittest.TestCase):
             managed_property = catalog["organization"]["custom_properties"][0]
             ruleset_key, ruleset = next(iter(catalog["rulesets"].items()))
             ruleset_name = ruleset.get("name") or ruleset_key
+            physical_rulesets = {
+                f"{ruleset_name}-{role}": {
+                    "id": 31 + index,
+                    "name": f"{ruleset_name}-{role}",
+                    "enforcement": "active",
+                }
+                for index, role in enumerate(("integrity", "pr-governance", "required-workflow"))
+            }
+            repository_reference = ruleset["repositories"][0]
+            repository_name = catalog["repositories"][repository_reference]["name"]
             observed = {
                 "core_observation_complete": True,
                 "observation_complete": True,
@@ -514,8 +524,15 @@ class PermissionReductionTest(unittest.TestCase):
                     repository["name"]: {"id": 20 + index, "name": repository["name"]}
                     for index, repository in enumerate(catalog["repositories"].values())
                 },
-                "rulesets": {
-                    ruleset_name: {"id": 31, "name": ruleset_name, "enforcement": "active"},
+                "rulesets": physical_rulesets,
+                "repository_rulesets": {
+                    repository_name: {
+                        f"{ruleset_name}-merge-queue": {
+                            "id": 34,
+                            "name": f"{ruleset_name}-merge-queue",
+                            "enforcement": "active",
+                        }
+                    }
                 },
                 "repository_team_grants": {
                     "github-config": [{"slug": "security", "permission": "maintain"}],
@@ -557,8 +574,25 @@ class PermissionReductionTest(unittest.TestCase):
             report = json.loads(report_path.read_text())
             self.assertEqual(report["adopted_team_ids"]["security"], 10)
             self.assertEqual(report["adopted_repository_names"]["github-config"], "github-config")
-            self.assertEqual(report["adopted_ruleset_ids"], {ruleset_key: 31})
-            self.assertEqual(report["adopted_ruleset_enforcements"], {ruleset_key: "active"})
+            expected_ruleset_ids = {
+                f"{ruleset_key}--integrity": 31,
+                f"{ruleset_key}--pr-governance": 32,
+                f"{ruleset_key}--required-workflow": 33,
+            }
+            self.assertEqual(report["adopted_ruleset_ids"], expected_ruleset_ids)
+            self.assertEqual(
+                report["adopted_ruleset_enforcements"],
+                dict.fromkeys(expected_ruleset_ids, "active"),
+            )
+            repository_ruleset_key = f"{ruleset_key}--merge-queue--{repository_reference}"
+            self.assertEqual(
+                report["adopted_repository_ruleset_ids"],
+                {repository_ruleset_key: f"{repository_name}:34"},
+            )
+            self.assertEqual(
+                report["adopted_repository_ruleset_enforcements"],
+                {repository_ruleset_key: "active"},
+            )
             self.assertEqual(
                 report["adopted_organization_oidc_templates"], {"organization": "mindclade"}
             )

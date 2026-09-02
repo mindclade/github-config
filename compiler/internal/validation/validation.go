@@ -164,6 +164,11 @@ func ValidateCatalog(documents []*Document) error {
 	if err := validateCustomPropertyMigration(organizationSpec); err != nil {
 		return err
 	}
+	if err := validateFounderPullRequestBypass(
+		organizationSpec, teamSpecs, organizationMemberPrincipals, documents,
+	); err != nil {
+		return err
+	}
 	if outsideCollaboratorPolicy != nil {
 		maxRank, supported := permissionRank(stringValue(outsideCollaboratorPolicy["max_permission"]))
 		if !supported {
@@ -371,6 +376,24 @@ func ValidateCatalog(documents []*Document) error {
 			if err := requireReferences(document.Path, "spec.repositories", stringList(spec["repositories"]), repositories); err != nil {
 				return err
 			}
+			if stringValue(spec["target"]) == "branch" {
+				rules := specObject(spec, "rules")
+				requiredWorkflow := specObject(rules, "required_workflow")
+				if err := requireReference(
+					document.Path, "spec.rules.required_workflow.repository",
+					stringValue(requiredWorkflow["repository"]), repositories,
+				); err != nil {
+					return err
+				}
+				if stringValue(requiredWorkflow["path"]) != ".github/workflows/pull-request.yml" ||
+					stringValue(requiredWorkflow["ref"]) != "refs/heads/main" {
+					return fmt.Errorf("%s: branch policy requires the protected organization pull-request workflow on main", document.Path)
+				}
+				checks := objectList(specObject(rules, "required_status_checks")["checks"])
+				if len(checks) != 1 || stringValue(checks[0]["context"]) != "Pull request / required" {
+					return fmt.Errorf("%s: branch policy must expose exactly the canonical Pull request / required context", document.Path)
+				}
+			}
 			for _, actor := range objectList(spec["bypass_actors"]) {
 				actorType := stringValue(actor["actor_type"])
 				actorID := stringValue(actor["actor"])
@@ -558,6 +581,105 @@ func ValidateCatalog(documents []*Document) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func validateFounderPullRequestBypass(
+	organization map[string]any,
+	teams map[string]map[string]any,
+	memberPrincipals map[string]string,
+	documents []*Document,
+) error {
+	policy := specObject(organization, "founder_pull_request_bypass")
+	if stringValue(policy["contract"]) != "founder-pr-bypass.v1" ||
+		stringValue(policy["team"]) != "founder-pr-bypass" ||
+		stringValue(policy["principal_id"]) != "founder-primary" ||
+		stringValue(policy["bypass_mode"]) != "pull_request" ||
+		!boolValue(policy["durable"]) || !boolValue(policy["self_authored_pull_requests"]) ||
+		stringValue(policy["label"]) != "founder-bypass" ||
+		stringValue(policy["comment_marker"]) != "<!-- founder-pr-bypass:v1 -->" ||
+		!boolValue(policy["all_repositories"]) || !boolValue(policy["all_paths"]) ||
+		!boolValue(policy["head_sha_required"]) || !boolValue(policy["reason_required"]) ||
+		!boolValue(policy["author_must_map_to_principal"]) ||
+		boolValue(policy["foundation_authority"]) || boolValue(policy["production_authority"]) ||
+		stringValue(policy["fbe_exception_id"]) != "FBE-0001" {
+		return errors.New("founder-pr-bypass.v1 must retain its exact head-bound, non-authoritative contract")
+	}
+	accounts := stringList(policy["github_actor_accounts"])
+	if !sameOrderedStrings(accounts, []string{"mindclade-founder", "robpearc"}) {
+		return errors.New("founder-pr-bypass.v1 requires the exact reviewed actor mapping")
+	}
+	for _, account := range accounts {
+		if memberPrincipals[strings.ToLower(account)] != "founder-primary" {
+			return fmt.Errorf("founder-pr-bypass.v1 account %q must map to founder-primary", account)
+		}
+	}
+	team := teams["founder-pr-bypass"]
+	if stringValue(team["name"]) != "founder-pr-bypass" || stringValue(team["privacy"]) != "closed" || team["parent_team"] != nil {
+		return errors.New("founder-pr-bypass team must be a closed, non-nested, nonsecret identity group")
+	}
+	members := objectList(team["members"])
+	if len(members) != 2 {
+		return errors.New("founder-pr-bypass team must contain exactly the two mapped founder accounts")
+	}
+	actualMembers := make([]string, 0, len(members))
+	for _, member := range members {
+		if stringValue(member["role"]) != "maintainer" {
+			return errors.New("founder-pr-bypass team members must use the exact maintainer role")
+		}
+		actualMembers = append(actualMembers, stringValue(member["login"]))
+	}
+	sort.Strings(actualMembers)
+	expectedMembers := append([]string(nil), accounts...)
+	sort.Strings(expectedMembers)
+	if !equalStringLists(actualMembers, expectedMembers) {
+		return errors.New("founder-pr-bypass team membership differs from its actor-to-principal mapping")
+	}
+	managedRepositories := make(set)
+	coveredRepositories := make(set)
+	branchRulesets := 0
+	for _, document := range documents {
+		if document.Kind == "Repository" {
+			spec, _ := document.Spec.(map[string]any)
+			managedRepositories.add(stringValue(spec["name"]))
+			continue
+		}
+		if document.Kind != "Ruleset" {
+			continue
+		}
+		spec, _ := document.Spec.(map[string]any)
+		actors := objectList(spec["bypass_actors"])
+		if stringValue(spec["target"]) != "branch" {
+			if len(actors) != 0 {
+				return fmt.Errorf("%s: founder bypass is forbidden outside branch pull-request governance", document.Path)
+			}
+			continue
+		}
+		branchRulesets++
+		if len(actors) != 1 || stringValue(actors[0]["actor_type"]) != "team" ||
+			stringValue(actors[0]["actor"]) != "founder-pr-bypass" ||
+			stringValue(actors[0]["mode"]) != "pull_request" {
+			return fmt.Errorf("%s: branch policy must delegate only pull-request bypass to founder-pr-bypass", document.Path)
+		}
+		for _, repository := range stringList(spec["repositories"]) {
+			coveredRepositories.add(repository)
+		}
+	}
+	if branchRulesets == 0 || len(coveredRepositories) != len(managedRepositories) {
+		return errors.New("founder-pr-bypass.v1 must cover every managed repository through branch PR governance")
+	}
+	for repository := range managedRepositories {
+		if !coveredRepositories.has(repository) {
+			return fmt.Errorf("founder-pr-bypass.v1 does not cover managed repository %q", repository)
+		}
+	}
+	activation := specObject(policy, "activation")
+	if stringValue(activation["state"]) == "ready" && len(stringList(activation["blockers"])) != 0 {
+		return errors.New("ready founder-pr-bypass.v1 activation cannot retain blockers")
+	}
+	if stringValue(activation["state"]) == "blocked" && len(stringList(activation["blockers"])) == 0 {
+		return errors.New("blocked founder-pr-bypass.v1 activation requires explicit blockers")
 	}
 	return nil
 }
@@ -1212,7 +1334,7 @@ func founderBootstrapQualification(desired, observed map[string]any, phase strin
 	expires, err := time.Parse(time.RFC3339, expiresAt)
 	allowedOperations := stringList(exception["allowed_operations"])
 	deniedOperations := stringList(exception["denied_operations"])
-	if stringValue(organization["estate_profile"]) != "github-free-public" ||
+	if stringValue(organization["estate_profile"]) != "github-enterprise-cloud-mixed" ||
 		stringValue(exception["id"]) != "FBE-0001" ||
 		stringValue(exception["state"]) != "UNUSED" ||
 		stringValue(exception["scope"]) != "founder-bootstrap-only" ||
@@ -1420,6 +1542,7 @@ func adoptionBindings(
 	maps := make(map[string]any)
 	for _, key := range []string{
 		"adopted_team_ids", "adopted_repository_names", "adopted_ruleset_ids", "adopted_ruleset_enforcements",
+		"adopted_repository_ruleset_ids", "adopted_repository_ruleset_enforcements",
 		"adopted_environment_ids", "adopted_environment_policy_ids",
 		"adopted_organization_oidc_templates", "adopted_organization_custom_properties",
 		"adopted_repository_actions_access_levels", "adopted_repository_oidc_templates", "adopted_repository_custom_properties",
@@ -1433,6 +1556,8 @@ func adoptionBindings(
 	repositoryNames := maps["adopted_repository_names"].(map[string]any)
 	rulesetIDs := maps["adopted_ruleset_ids"].(map[string]any)
 	rulesetEnforcements := maps["adopted_ruleset_enforcements"].(map[string]any)
+	repositoryRulesetIDs := maps["adopted_repository_ruleset_ids"].(map[string]any)
+	repositoryRulesetEnforcements := maps["adopted_repository_ruleset_enforcements"].(map[string]any)
 	environmentIDs := maps["adopted_environment_ids"].(map[string]any)
 	environmentPolicyIDs := maps["adopted_environment_policy_ids"].(map[string]any)
 	issues := make([]string, 0)
@@ -1484,8 +1609,26 @@ func adoptionBindings(
 			if configured := stringValue(spec["name"]); configured != "" {
 				name = configured
 			}
-			bindObservedRulesetAdoption(id, name, "", observedRulesets, rulesetIDs, rulesetEnforcements, &issues)
 			rules, _ := spec["rules"].(map[string]any)
+			if stringValue(spec["target"]) == "branch" {
+				for _, suffix := range []string{"--integrity", "--pr-governance", "--required-workflow"} {
+					bindObservedRulesetAdoption(
+						id+suffix, name+strings.ReplaceAll(suffix, "--", "-"), "", observedRulesets,
+						rulesetIDs, rulesetEnforcements, &issues,
+					)
+				}
+				observedRepositoryRulesets, _ := observed["repository_rulesets"].(map[string]any)
+				for _, repositoryReference := range stringList(spec["repositories"]) {
+					repositoryName := repositoryNameForReference(repositoryReference, desiredRepositories)
+					repositoryRules, _ := observedRepositoryRulesets[repositoryName].(map[string]any)
+					bindObservedRulesetAdoption(
+						id+"--merge-queue--"+repositoryReference, name+"-merge-queue", repositoryName,
+						repositoryRules, repositoryRulesetIDs, repositoryRulesetEnforcements, &issues,
+					)
+				}
+			} else {
+				bindObservedRulesetAdoption(id, name, "", observedRulesets, rulesetIDs, rulesetEnforcements, &issues)
+			}
 			if stringValue(spec["target"]) == "tag" && boolValue(rules["creation_restricted"]) {
 				bindObservedRulesetAdoption(
 					id+"--creator-gate", name+"-creator-gate", "", observedRulesets,
@@ -1808,6 +1951,10 @@ func bindObservedRulesetAdoption(
 	enforcement := stringValue(ruleset["enforcement"])
 	if enforcement != "disabled" && enforcement != "evaluate" && enforcement != "active" {
 		*issues = append(*issues, fmt.Sprintf("observed ruleset %q has invalid enforcement %q", name, enforcement))
+		return
+	}
+	if repositoryName != "" && enforcement == "evaluate" {
+		*issues = append(*issues, fmt.Sprintf("repository ruleset %q cannot use organization-only evaluate enforcement", name))
 		return
 	}
 	if repositoryName == "" {

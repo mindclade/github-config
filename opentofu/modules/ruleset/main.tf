@@ -16,11 +16,6 @@ locals {
     for key, ruleset in var.rulesets : key => merge(ruleset, {
       logical_key    = key
       effective_name = coalesce(ruleset.name, key)
-      effective_enforcement = (
-        var.rollout_phase == "adopt" && contains(keys(var.adopted_ruleset_enforcements), key) ? var.adopted_ruleset_enforcements[key] :
-        var.rollout_phase == "enforce" ? ruleset.enforcement :
-        var.rollout_phase == "foundation" ? "evaluate" : "disabled"
-      )
       repository_names = [
         for reference in ruleset.repositories :
         lookup(local.repository_reference_to_name, reference, reference)
@@ -29,21 +24,22 @@ locals {
     })
   }
 
-  primary_rulesets = {
+  tag_immutability_rulesets = {
     for key, ruleset in local.logical_rulesets : key => merge(ruleset, {
-      physical_role          = ruleset.is_creation_restricted_tag ? "immutability" : "complete"
+      physical_role          = "immutability"
       original_bypass_actors = ruleset.bypass_actors
-      bypass_actors          = ruleset.is_creation_restricted_tag ? [] : ruleset.bypass_actors
-      rules = ruleset.is_creation_restricted_tag ? merge(ruleset.rules, {
+      bypass_actors          = []
+      rules = merge(ruleset.rules, {
         creation_restricted             = false
         required_linear_history         = false
         required_signatures             = false
         merge_queue                     = false
+        required_workflow               = null
         authorized_creator_integrations = []
         pull_request                    = null
         required_status_checks          = null
-      }) : ruleset.rules
-    })
+      })
+    }) if ruleset.target == "tag"
   }
 
   creator_gate_rulesets = {
@@ -60,19 +56,86 @@ locals {
         required_signatures     = false
         creation_restricted     = true
         merge_queue             = false
+        required_workflow       = null
         pull_request            = null
         required_status_checks  = null
       })
     }) if ruleset.is_creation_restricted_tag
   }
 
-  physical_rulesets = merge(local.primary_rulesets, local.creator_gate_rulesets)
+  branch_integrity_rulesets = {
+    for key, ruleset in local.logical_rulesets : "${key}--integrity" => merge(ruleset, {
+      physical_role          = "integrity"
+      effective_name         = "${ruleset.effective_name}-integrity"
+      original_bypass_actors = ruleset.bypass_actors
+      bypass_actors          = []
+      rules = merge(ruleset.rules, {
+        update                          = false
+        creation_restricted             = false
+        merge_queue                     = false
+        required_workflow               = null
+        authorized_creator_integrations = []
+        pull_request                    = null
+        required_status_checks          = null
+      })
+    }) if ruleset.target == "branch"
+  }
+
+  branch_pr_governance_rulesets = {
+    for key, ruleset in local.logical_rulesets : "${key}--pr-governance" => merge(ruleset, {
+      physical_role          = "pr_governance"
+      effective_name         = "${ruleset.effective_name}-pr-governance"
+      original_bypass_actors = ruleset.bypass_actors
+      bypass_actors          = ruleset.bypass_actors
+      rules = merge(ruleset.rules, {
+        update                          = false
+        deletion                        = false
+        non_fast_forward                = false
+        required_linear_history         = false
+        required_signatures             = false
+        creation_restricted             = false
+        merge_queue                     = false
+        required_workflow               = null
+        authorized_creator_integrations = []
+        required_status_checks          = null
+      })
+    }) if ruleset.target == "branch"
+  }
+
+  branch_required_workflow_rulesets = {
+    for key, ruleset in local.logical_rulesets : "${key}--required-workflow" => merge(ruleset, {
+      physical_role          = "required_workflow"
+      effective_name         = "${ruleset.effective_name}-required-workflow"
+      original_bypass_actors = ruleset.bypass_actors
+      bypass_actors          = []
+      rules = merge(ruleset.rules, {
+        update                          = false
+        deletion                        = false
+        non_fast_forward                = false
+        required_linear_history         = false
+        required_signatures             = false
+        creation_restricted             = false
+        merge_queue                     = false
+        authorized_creator_integrations = []
+        pull_request                    = null
+      })
+    }) if ruleset.target == "branch"
+  }
+
+  physical_rulesets = merge(
+    local.tag_immutability_rulesets,
+    local.creator_gate_rulesets,
+    local.branch_integrity_rulesets,
+    local.branch_pr_governance_rulesets,
+    local.branch_required_workflow_rulesets,
+  )
 
   rulesets = {
     for key, ruleset in local.physical_rulesets : key => merge(ruleset, {
       effective_enforcement = (
-        var.rollout_phase == "adopt" && contains(keys(var.adopted_ruleset_enforcements), key) ?
-        var.adopted_ruleset_enforcements[key] : ruleset.effective_enforcement
+        var.rollout_phase == "adopt" && contains(keys(var.adopted_ruleset_enforcements), key) ? var.adopted_ruleset_enforcements[key] :
+        var.rollout_phase == "enforce" ? ruleset.enforcement :
+        var.rollout_phase == "foundation" ? "evaluate" : "disabled"
       )
       resolved_bypass_actors = merge(
         {
@@ -106,6 +169,26 @@ locals {
       ))
     })
   }
+
+  repository_merge_queue_rulesets = merge([
+    for key, ruleset in local.logical_rulesets : {
+      for reference in ruleset.repositories : "${key}--merge-queue--${reference}" => {
+        logical_key    = key
+        physical_role  = "merge_queue"
+        name           = "${ruleset.effective_name}-merge-queue"
+        repository_ref = reference
+        repository     = lookup(local.repository_reference_to_name, reference, reference)
+        target         = "branch"
+        include_refs   = ruleset.include_refs
+        exclude_refs   = ruleset.exclude_refs
+        enforcement = (
+          var.rollout_phase == "adopt" && contains(keys(var.adopted_repository_ruleset_enforcements), "${key}--merge-queue--${reference}") ?
+          var.adopted_repository_ruleset_enforcements["${key}--merge-queue--${reference}"] :
+          var.rollout_phase == "enforce" ? ruleset.enforcement : "disabled"
+        )
+      }
+    } if ruleset.target == "branch" && ruleset.rules.merge_queue
+  ]...)
 }
 
 resource "github_organization_ruleset" "this" {
@@ -175,6 +258,20 @@ resource "github_organization_ruleset" "this" {
               lookup(var.qualified_status_check_integration_ids, required_check.value.issuer_type, null),
             ), null)
           }
+        }
+      }
+    }
+
+    dynamic "required_workflows" {
+      for_each = each.value.rules.required_workflow == null ? [] : [each.value.rules.required_workflow]
+
+      content {
+        do_not_enforce_on_create = false
+
+        required_workflow {
+          repository_id = var.repository_ids[required_workflows.value.repository]
+          path          = required_workflows.value.path
+          ref           = required_workflows.value.ref
         }
       }
     }
@@ -261,18 +358,57 @@ resource "github_organization_ruleset" "this" {
       condition = (
         var.rollout_phase != "enforce" ||
         each.value.effective_enforcement != "active" ||
-        each.value.rules.required_status_checks == null
+        each.value.rules.required_workflow == null ||
+        contains(keys(var.repository_ids), each.value.rules.required_workflow.repository)
       )
-      error_message = "Active required checks remain blocked: provider required_workflows needs a qualified source repository ID and immutable ref, which workflow_path and triggers alone do not supply."
+      error_message = "Active organization required workflows need a managed numeric source repository ID."
     }
 
     precondition {
       condition = (
-        var.rollout_phase != "enforce" ||
-        each.value.effective_enforcement != "active" ||
-        !each.value.rules.merge_queue
+        each.value.physical_role == "pr_governance" || length(each.value.bypass_actors) == 0
       )
-      error_message = "Active merge-queue enforcement remains blocked because provider 6.13.0 cannot materialize the desired organization ruleset control."
+      error_message = "Only the split pull-request-governance ruleset may carry bypass actors."
+    }
+  }
+}
+
+resource "github_repository_ruleset" "merge_queue" {
+  for_each = local.repository_merge_queue_rulesets
+
+  name        = each.value.name
+  repository  = each.value.repository
+  target      = each.value.target
+  enforcement = each.value.enforcement
+
+  conditions {
+    ref_name {
+      include = each.value.include_refs
+      exclude = each.value.exclude_refs
+    }
+  }
+
+  rules {
+    merge_queue {
+      check_response_timeout_minutes    = 30
+      grouping_strategy                 = "ALLGREEN"
+      max_entries_to_build              = 2
+      max_entries_to_merge              = 1
+      merge_method                      = "SQUASH"
+      min_entries_to_merge              = 1
+      min_entries_to_merge_wait_minutes = 0
+    }
+  }
+
+  lifecycle {
+    precondition {
+      condition     = contains(keys(local.repository_reference_to_name), each.value.repository_ref)
+      error_message = "Repository merge-queue ruleset references an unknown repository."
+    }
+
+    precondition {
+      condition     = var.rollout_phase == "enforce" || each.value.enforcement == "disabled"
+      error_message = "Repository rulesets stay disabled until the protected enforce phase because evaluate mode is organization-only."
     }
   }
 }

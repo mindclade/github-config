@@ -110,6 +110,13 @@ import {
 }
 
 import {
+  for_each = var.adopted_repository_ruleset_ids
+
+  to = module.rulesets.github_repository_ruleset.merge_queue[each.key]
+  id = each.value
+}
+
+import {
   for_each = var.adopted_environment_ids
 
   to = module.repository_environments.github_repository_environment.this[each.key]

@@ -11,6 +11,7 @@ just format
 just format-check
 just lint
 just check
+just workflow-contract
 ```
 
 `just format` edits only handwritten source and configuration. Generated
@@ -25,3 +26,9 @@ checking.
 
 Passing local checks proves source qualification only. It does not authorize or
 prove connected GitHub governance changes.
+
+The pre-push hook runs `github-configctl workflow-contract` against local
+sources. Changes to reusable-workflow calls or action pins must also pass CI
+with immutable authority checkouts and `--require-authorities`; a locally
+unavailable sibling authority is not evidence that the estate contract is
+complete.

@@ -1,4 +1,4 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 
 package(default_visibility = ["//visibility:private"])
 
@@ -51,6 +51,28 @@ go_library(
 )
 
 go_library(
+    name = "founder_bypass",
+    srcs = ["internal/founderbypass/founder_bypass.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/founderbypass",
+    deps = [
+        ":catalog",
+        ":rendering",
+        ":validation",
+    ],
+)
+
+go_library(
+    name = "doctor",
+    srcs = ["internal/doctor/doctor.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/doctor",
+    deps = [
+        ":github_diff",
+        ":validation",
+        ":workflow_contract",
+    ],
+)
+
+go_library(
     name = "plan_evidence",
     srcs = ["internal/evidence/plan_evidence.go"],
     importpath = "github.com/mindclade/github-config/compiler/internal/evidence",
@@ -61,21 +83,69 @@ go_library(
 )
 
 go_library(
+    name = "workflow_contract",
+    srcs = ["internal/workflowcontract/workflow_contract.go"],
+    importpath = "github.com/mindclade/github-config/compiler/internal/workflowcontract",
+    deps = [
+        ":catalog",
+        ":rendering",
+        ":validation",
+        "@in_gopkg_yaml_v3//:yaml_v3",
+    ],
+)
+
+go_library(
     name = "github_configctl_lib",
     srcs = ["cmd/github-configctl/main.go"],
     importpath = "github.com/mindclade/github-config/compiler/cmd/github-configctl",
     visibility = ["//visibility:private"],
     deps = [
         ":catalog",
+        ":doctor",
+        ":founder_bypass",
         ":github_diff",
         ":plan_evidence",
         ":rendering",
         ":validation",
+        ":workflow_contract",
     ],
 )
 
 go_binary(
     name = "github-configctl",
     embed = [":github_configctl_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "doctor_test",
+    srcs = ["internal/doctor/doctor_test.go"],
+    embed = [":doctor"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":github_diff",
+        ":workflow_contract",
+    ],
+)
+
+go_test(
+    name = "founder_bypass_test",
+    srcs = ["internal/founderbypass/founder_bypass_test.go"],
+    embed = [":founder_bypass"],
+    visibility = ["//visibility:public"],
+    deps = [":catalog"],
+)
+
+go_test(
+    name = "github_diff_test",
+    srcs = ["internal/diff/github_diff_test.go"],
+    embed = [":github_diff"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "workflow_contract_test",
+    srcs = ["internal/workflowcontract/workflow_contract_test.go"],
+    embed = [":workflow_contract"],
     visibility = ["//visibility:public"],
 )

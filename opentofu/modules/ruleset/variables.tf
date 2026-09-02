@@ -13,13 +13,18 @@ variable "rulesets" {
       mode       = string
     }))
     rules = object({
-      update                          = optional(bool, false)
-      deletion                        = optional(bool, false)
-      non_fast_forward                = optional(bool, false)
-      required_linear_history         = optional(bool, false)
-      required_signatures             = optional(bool, false)
-      creation_restricted             = optional(bool, false)
-      merge_queue                     = optional(bool, false)
+      update                  = optional(bool, false)
+      deletion                = optional(bool, false)
+      non_fast_forward        = optional(bool, false)
+      required_linear_history = optional(bool, false)
+      required_signatures     = optional(bool, false)
+      creation_restricted     = optional(bool, false)
+      merge_queue             = optional(bool, false)
+      required_workflow = optional(object({
+        repository = string
+        path       = string
+        ref        = string
+      }))
       authorized_creator_integrations = optional(list(string), [])
       pull_request = optional(object({
         required_approving_review_count   = number
@@ -85,6 +90,22 @@ variable "rulesets" {
 variable "repository_names" {
   description = "Repository names keyed by stable catalog identifier."
   type        = map(string)
+}
+
+variable "repository_ids" {
+  description = "Numeric repository IDs keyed by stable catalog identifier for organization required workflows."
+  type        = map(number)
+}
+
+variable "adopted_repository_ruleset_enforcements" {
+  description = "Exact observed enforcement for imported repository merge-queue rulesets."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for enforcement in values(var.adopted_repository_ruleset_enforcements) : contains(["disabled", "active"], enforcement)])
+    error_message = "Imported repository ruleset enforcement must be disabled or active."
+  }
 }
 
 variable "team_ids" {

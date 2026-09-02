@@ -206,12 +206,78 @@
         }
       ]
     },
+    "founderPullRequestBypass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract",
+        "entitlement_id",
+        "team",
+        "principal_id",
+        "github_actor_accounts",
+        "durable",
+        "bypass_mode",
+        "self_authored_pull_requests",
+        "all_repositories",
+        "all_paths",
+        "label",
+        "comment_marker",
+        "head_sha_required",
+        "reason_required",
+        "author_must_map_to_principal",
+        "foundation_authority",
+        "production_authority",
+        "fbe_exception_id",
+        "activation"
+      ],
+      "properties": {
+        "contract": { "const": "founder-pr-bypass.v1" },
+        "entitlement_id": { "const": "founder-pr-bypass" },
+        "team": { "const": "founder-pr-bypass" },
+        "principal_id": { "const": "founder-primary" },
+        "github_actor_accounts": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "prefixItems": [{ "const": "mindclade-founder" }, { "const": "robpearc" }],
+          "items": false
+        },
+        "durable": { "const": true },
+        "bypass_mode": { "const": "pull_request" },
+        "self_authored_pull_requests": { "const": true },
+        "all_repositories": { "const": true },
+        "all_paths": { "const": true },
+        "label": { "const": "founder-bypass" },
+        "comment_marker": { "const": "<!-- founder-pr-bypass:v1 -->" },
+        "head_sha_required": { "const": true },
+        "reason_required": { "const": true },
+        "author_must_map_to_principal": { "const": true },
+        "foundation_authority": { "const": false },
+        "production_authority": { "const": false },
+        "fbe_exception_id": { "const": "FBE-0001" },
+        "activation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "blockers"],
+          "properties": {
+            "state": { "enum": ["ready", "blocked"] },
+            "blockers": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]+$" }
+            }
+          }
+        }
+      }
+    },
     "spec": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "estate_profile",
         "founder_bootstrap_exception",
+        "founder_pull_request_bypass",
         "organization_login",
         "default_repository_permission",
         "members_can_create_repositories",
@@ -227,8 +293,9 @@
         "custom_property_migration"
       ],
       "properties": {
-        "estate_profile": { "const": "github-free-public" },
+        "estate_profile": { "const": "github-enterprise-cloud-mixed" },
         "founder_bootstrap_exception": { "$ref": "#/$defs/founderBootstrapException" },
+        "founder_pull_request_bypass": { "$ref": "#/$defs/founderPullRequestBypass" },
         "organization_login": { "type": "string", "pattern": "^[A-Za-z0-9-]{1,39}$" },
         "default_repository_permission": { "enum": ["none", "read", "write", "admin"] },
         "members_can_create_repositories": { "type": "boolean" },

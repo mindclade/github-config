@@ -15,6 +15,7 @@ spec:
   # GitHub private vulnerability reporting applies to this public estate.
   private_vulnerability_reporting_required: true
   required_capabilities:
+    - github-enterprise-cloud
     - github-advanced-security
   activation:
     state: blocked
