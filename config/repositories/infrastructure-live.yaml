@@ -6,7 +6,7 @@ metadata:
 spec:
   name: infrastructure-live
   description: Environment-specific cloud infrastructure composition and state references.
-  visibility: public
+  visibility: private
   actions_access_level: none
   archived: false
   archive_on_destroy: true

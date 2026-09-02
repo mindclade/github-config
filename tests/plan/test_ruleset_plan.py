@@ -112,6 +112,10 @@ class RulesetPlanTest(unittest.TestCase):
                 }
             ],
         )
+        self.assertEqual(
+            catalog["rulesets"]["governance-source"]["repositories"],
+            [".github", "estate-ci", "github-config"],
+        )
 
     def test_repository_ruleset_references_resolve(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -81,6 +81,7 @@ var sourceDefinitions = []sourceDefinition{
 	{"config/teams/release-engineering.yaml", "team.schema.json", "Team", "teams"},
 	{"config/teams/security.yaml", "team.schema.json", "Team", "teams"},
 	{"config/repositories/dot-github.yaml", "repository.schema.json", "Repository", "repositories"},
+	{"config/repositories/estate-ci.yaml", "repository.schema.json", "Repository", "repositories"},
 	{"config/repositories/github-config.yaml", "repository.schema.json", "Repository", "repositories"},
 	{"config/repositories/bootstrap.yaml", "repository.schema.json", "Repository", "repositories"},
 	{"config/repositories/infrastructure-live.yaml", "repository.schema.json", "Repository", "repositories"},

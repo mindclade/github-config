@@ -6,7 +6,7 @@ metadata:
 spec:
   name: .github
   description: Organization-wide reusable workflows and community health policy.
-  visibility: public
+  visibility: internal
   actions_access_level: organization
   archived: false
   archive_on_destroy: true

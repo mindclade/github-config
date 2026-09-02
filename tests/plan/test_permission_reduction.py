@@ -39,12 +39,21 @@ class PermissionReductionTest(unittest.TestCase):
             catalog, _ = self.compile_catalog(Path(temporary))
         self.assertEqual(catalog["organization"]["default_repository_permission"], "none")
         rank = {"pull": 0, "triage": 1, "push": 2, "maintain": 3}
+        expected_visibilities = {
+            "bootstrap": "private",
+            "dot-github": "internal",
+            "estate-ci": "internal",
+            "github-config": "private",
+            "gitops": "private",
+            "infrastructure-live": "private",
+            "mindclade": "internal",
+        }
         for name, repository in catalog["repositories"].items():
             self.assertEqual(repository["direct_collaborators"], [], name)
             for grant in repository["team_grants"]:
                 self.assertIn(grant["permission"], rank, name)
                 self.assertLessEqual(rank[grant["permission"]], rank["maintain"], name)
-            self.assertEqual(repository["visibility"], "public", name)
+            self.assertEqual(repository["visibility"], expected_visibilities[name], name)
             expected_access = "organization" if repository["name"] == ".github" else "none"
             self.assertEqual(repository["actions_access_level"], expected_access, name)
             self.assertEqual(repository["custom_properties"]["data_classification"], "public", name)
@@ -601,7 +610,7 @@ class PermissionReductionTest(unittest.TestCase):
             )
             self.assertEqual(
                 report["adopted_repository_actions_access_levels"],
-                {},
+                {"github-config": "github-config"},
             )
             self.assertEqual(
                 report["adopted_memberships"][members[0]["login"]],

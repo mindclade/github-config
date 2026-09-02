@@ -320,7 +320,7 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertIn("/repositories/github-config/actions_access_level", paths)
             self.assertIn("/organization/custom_properties", paths)
 
-    def test_public_repository_actions_access_projection_is_explicit_and_closed_world(self):
+    def test_mixed_repository_actions_access_projection_is_explicit_and_closed_world(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             desired = directory / "desired.json"
@@ -332,22 +332,28 @@ class ObservedStateDiffTest(unittest.TestCase):
             repository_ids = {
                 "bootstrap",
                 "dot-github",
+                "estate-ci",
                 "github-config",
                 "gitops",
                 "infrastructure-live",
                 "mindclade",
             }
             self.assertEqual(set(projection["repositories"]), repository_ids)
-            public_semantics = {
-                "applicability": "not_applicable",
-                "visibility": "public",
+            expected_access = {
+                "bootstrap": "none",
+                "dot-github": "organization",
+                "estate-ci": "none",
+                "github-config": "none",
+                "gitops": "none",
+                "infrastructure-live": "none",
+                "mindclade": "none",
             }
             self.assertEqual(
                 {
                     repository_id: projection["repositories"][repository_id]["actions_access_level"]
                     for repository_id in repository_ids
                 },
-                dict.fromkeys(repository_ids, public_semantics),
+                expected_access,
             )
 
             missing_projection = json.loads(json.dumps(projection))
@@ -369,16 +375,14 @@ class ObservedStateDiffTest(unittest.TestCase):
                 f"/repositories/{repository_id}/actions_access_level"
                 for repository_id in repository_ids
             }
-            self.assertEqual(missing_report["summary"]["missing"], 6)
+            self.assertEqual(missing_report["summary"]["missing"], 7)
             self.assertEqual(
                 {(change["kind"], change["path"]) for change in missing_report["changes"]},
                 {("missing", path) for path in expected_paths},
             )
 
             extra_projection = json.loads(json.dumps(projection))
-            extra_projection["repositories"]["github-config"]["actions_access_level"][
-                "undeclared_actions_control"
-            ] = True
+            extra_projection["repositories"]["github-config"]["undeclared_actions_control"] = True
             observed.write_text(json.dumps({"managed_projection": extra_projection}))
             extra = invoke(
                 "diff",
@@ -397,7 +401,7 @@ class ObservedStateDiffTest(unittest.TestCase):
                 {
                     (
                         "extra",
-                        "/repositories/github-config/actions_access_level/undeclared_actions_control",
+                        "/repositories/github-config/undeclared_actions_control",
                     )
                 },
             )
@@ -1421,6 +1425,7 @@ class ObservedStateDiffTest(unittest.TestCase):
     def test_repository_inventory_requires_authoritative_organization_totals(self):
         repository_names = [
             ".github",
+            "estate-ci",
             "github-config",
             "bootstrap",
             "infrastructure-live",
@@ -1600,13 +1605,13 @@ class ObservedStateDiffTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     return json.loads(output.read_text())
 
-                restricted = observe("restricted", (0, 7))
+                restricted = observe("restricted", (0, 8))
                 self.assertFalse(restricted["repository_inventory_complete"])
                 self.assertFalse(restricted["core_observation_complete"])
-                self.assertEqual(restricted["repository_inventory"]["enumerated_unique_count"], 6)
-                self.assertEqual(restricted["repository_inventory"]["authoritative_total_count"], 7)
+                self.assertEqual(restricted["repository_inventory"]["enumerated_unique_count"], 7)
+                self.assertEqual(restricted["repository_inventory"]["authoritative_total_count"], 8)
 
-                complete = observe("complete", (0, 6))
+                complete = observe("complete", (0, 7))
                 self.assertTrue(complete["repository_inventory_complete"])
                 self.assertTrue(complete["core_observation_complete"])
 

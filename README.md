@@ -22,14 +22,16 @@ approved source-contract changes and fresh connected evidence are both
 required before the enforce graph can become reachable.
 
 The declared estate profile is `github-enterprise-cloud-mixed`. It requires
-GitHub Enterprise Cloud and GitHub Advanced Security capabilities even though
-the current six-repository inventory remains public. Every desired repository
-carries `production_authority: none` until independent connected qualification
-replaces source bootstrap authority. Normal governance still requires two
-independent human principals. The exact, unexpired `FBE-0001` exception may use
-the two declared GitHub actor accounts mapped to `founder-primary` only for
-foundation bootstrap. It explicitly does not establish independence or
-production authority.
+GitHub Enterprise Cloud and GitHub Advanced Security capabilities. The
+seven-repository inventory records `.github`, `mindclade`, and prospective
+`estate-ci` as internal; bootstrap, github-config, gitops, and
+infrastructure-live remain private. Every desired repository carries
+`production_authority: none` until independent connected qualification replaces
+source bootstrap authority. Normal governance still requires two independent
+human principals. The exact, unexpired `FBE-0001` exception may use the two
+declared GitHub actor accounts mapped to `founder-primary` only for foundation
+bootstrap. It explicitly does not establish independence or production
+authority.
 
 The repository-local `flake.nix` and `flake.lock` remain the consumer
 system-toolchain lock for supported `aarch64-darwin` and `x86_64-linux` hosts.
@@ -62,8 +64,10 @@ connected drift evidence. It does not own:
 - the GCS state backend, KMS policy, WIF providers, or App-key custody
   (`mindclade/bootstrap`);
 - cloud infrastructure (`mindclade/infrastructure-live`);
-- Kubernetes desired state (`mindclade/gitops`); or
-- product source and build artifacts (`mindclade/mindclade`).
+- Kubernetes desired state (`mindclade/gitops`);
+- product source and build artifacts (`mindclade/mindclade`); or
+- the estate health and controlled CI operations service
+  (`mindclade/estate-ci`).
 
 Normal dependency direction is `.github` and bootstrap outputs into this
 repository. No workflow here mutates cloud infrastructure or runtime state.
@@ -84,12 +88,11 @@ fields, and refers to other objects by stable logical ID. Generated catalog,
 observation, plan, state, and evidence files are ephemeral and must not be
 committed.
 
-Every repository declares an Actions access level; `.github` retains the
-catalog's `organization` reusable-workflow authority and the other repositories
-declare `none`. GitHub's repository access-level control is inapplicable to
-public repositories, so the provider resource, import binding, observation,
-and drift projection omit it for this public estate rather than pretending a
-private-repository sharing boundary exists.
+Every repository declares an Actions access level; internal `.github` retains
+the catalog's `organization` reusable-workflow authority and the other private
+or internal repositories declare `none`. The provider, adoption, observation,
+and drift surfaces therefore manage this access boundary explicitly for every
+repository.
 The visible `developer-platform` and `security` teams retain `maintain` and
 `push` access respectively so both `.github/CODEOWNERS` entries can resolve
 once connected team membership is qualified.
@@ -341,7 +344,7 @@ The backend digest is SHA-256 over repository-canonical JSON
 `{version:"gcs-backend/v1",bucket,prefix}`. Canonical bytes are UTF-8 with
 lexically sorted keys, two-space indentation, and one terminal LF. The executor
 digest uses the same encoding and version `github-config-executor/v1`, binding organization,
-the `sts.googleapis.com` audience, the sorted six-repository scope, and both
+the `sts.googleapis.com` audience, the sorted seven-repository scope, and both
 roles' App ID, installation ID, service account, and WIF provider. Before any
 privileged authentication, the plan and apply jobs recompute these contracts
 from their effective values and compare them with the source-gate outputs.

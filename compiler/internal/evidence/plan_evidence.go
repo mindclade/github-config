@@ -497,18 +497,23 @@ func allowsFounderPublicBootstrap(catalog map[string]any, createdEpoch int64) bo
 		accounts[0] != "mindclade-founder" || accounts[1] != "robpearc" {
 		return false
 	}
-	expectedRepositories := map[string]struct{}{
-		"bootstrap": {}, "dot-github": {}, "github-config": {},
-		"gitops": {}, "infrastructure-live": {}, "mindclade": {},
+	expectedRepositories := map[string]string{
+		"bootstrap":           "private",
+		"dot-github":          "internal",
+		"estate-ci":           "internal",
+		"github-config":       "private",
+		"gitops":              "private",
+		"infrastructure-live": "private",
+		"mindclade":           "internal",
 	}
 	repositories, _ := catalog["repositories"].(map[string]any)
 	if len(repositories) != len(expectedRepositories) {
 		return false
 	}
-	for id := range expectedRepositories {
+	for id, expectedVisibility := range expectedRepositories {
 		repository, exists := repositories[id].(map[string]any)
 		properties, _ := repository["custom_properties"].(map[string]any)
-		if !exists || fmt.Sprint(repository["visibility"]) != "public" || fmt.Sprint(properties["data_classification"]) != "public" ||
+		if !exists || fmt.Sprint(repository["visibility"]) != expectedVisibility || fmt.Sprint(properties["data_classification"]) != "public" ||
 			fmt.Sprint(properties["production_authority"]) != "none" {
 			return false
 		}

@@ -176,18 +176,45 @@ class CatalogSchemaTest(unittest.TestCase):
             {
                 "bootstrap",
                 "dot-github",
+                "estate-ci",
                 "github-config",
                 "gitops",
                 "infrastructure-live",
                 "mindclade",
             },
         )
-        for repository in catalog["repositories"].values():
-            self.assertEqual(repository["visibility"], "public")
+        expected_visibilities = {
+            "bootstrap": "private",
+            "dot-github": "internal",
+            "estate-ci": "internal",
+            "github-config": "private",
+            "gitops": "private",
+            "infrastructure-live": "private",
+            "mindclade": "internal",
+        }
+        for repository_id, repository in catalog["repositories"].items():
+            self.assertEqual(repository["visibility"], expected_visibilities[repository_id])
             expected_access = "organization" if repository["name"] == ".github" else "none"
             self.assertEqual(repository["actions_access_level"], expected_access)
             self.assertEqual(repository["custom_properties"]["data_classification"], "public")
             self.assertEqual(repository["custom_properties"]["production_authority"], "none")
+
+        result = invoke("founder-bypass-policy", "--output", "-")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        founder_policy = json.loads(result.stdout)
+        self.assertEqual(
+            founder_policy["entitlement"]["repositories"],
+            [
+                ".github",
+                "bootstrap",
+                "estate-ci",
+                "github-config",
+                "gitops",
+                "infrastructure-live",
+                "mindclade",
+            ],
+        )
+        self.assertEqual(founder_policy["entitlement"]["paths"], ["**"])
 
         component = (ROOT / "component.yaml").read_text()
         self.assertIn("data_classification: public", component)
@@ -892,6 +919,7 @@ class CatalogSchemaTest(unittest.TestCase):
                 f"config/repositories/{name}.yaml"
                 for name in (
                     "dot-github",
+                    "estate-ci",
                     "github-config",
                     "bootstrap",
                     "infrastructure-live",
@@ -1061,7 +1089,7 @@ class CatalogSchemaTest(unittest.TestCase):
             policy_input = json.loads(output.read_text())
         self.assertEqual(policy_input["organization"]["kind"], "Organization")
         self.assertEqual(len(policy_input["memberships"]), 2)
-        self.assertEqual(len(policy_input["repositories"]), 6)
+        self.assertEqual(len(policy_input["repositories"]), 7)
         self.assertEqual(len(policy_input["rulesets"]), 5)
         self.assertNotIn("repository_gates", policy_input)
         self.assertEqual(len(policy_input["environments"]), 4)

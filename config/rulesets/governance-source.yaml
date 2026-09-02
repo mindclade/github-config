@@ -6,7 +6,7 @@ metadata:
 spec:
   target: branch
   enforcement: active
-  repositories: [.github, github-config]
+  repositories: [.github, estate-ci, github-config]
   include_refs: ["~DEFAULT_BRANCH"]
   exclude_refs: []
   bypass_actors:
