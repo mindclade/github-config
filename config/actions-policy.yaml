@@ -37,7 +37,7 @@ spec:
       activation:
         state: reviewed
     - repository: infrastructure-live
-      revision: a08e340ad6592c3da001d35171ebe0cde12dc184
+      revision: 14b6815a02cf4fffb7c27a18e064d60047d9482b
       workflows: [pull-request.yml, drift-detection.yml, protected-apply.yml, disaster-recovery.yml]
       activation:
         state: reviewed
