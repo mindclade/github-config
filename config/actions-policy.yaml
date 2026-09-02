@@ -17,7 +17,7 @@ spec:
     public_fork_pull_requests: false
   authority_inventories:
     - repository: .github
-      revision: e195b71d3657aca32cb325990e5e4ef8789b7eee
+      revision: 59b6fe9b76e8497572e289e83891817df5e62a7d
       implementation_revision: c097ef86c25991a400050c13e78574e8d3d8c071
       workflows:
         - reusable-buildkite-dispatch.yml
@@ -28,16 +28,16 @@ spec:
         - reusable-dependency-review.yml
         - reusable-codeql.yml
         - reusable-scorecard.yml
-        - self-test.yml
+        - pull-request.yml
       activation:
         state: reviewed
     - repository: bootstrap
-      revision: 9a221078120026167624d5d38b5fcd3f7c93560a
+      revision: b16f0628ce9fb87cd61fd5f38d655b89eaa81905
       workflows: [pull-request.yml, recovery-verification.yml, protected-apply.yml]
       activation:
         state: reviewed
     - repository: infrastructure-live
-      revision: b9de2e33d5d441893b9777bbfa48d6129c339963
+      revision: fa725a011c5ca03b9718a13816467621b1c5a902
       workflows: [pull-request.yml, drift-detection.yml, protected-apply.yml, disaster-recovery.yml]
       activation:
         state: reviewed

@@ -15,10 +15,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  NIX_CONFIG: |
+    experimental-features = nix-command flakes
+    accept-flake-config = false
+    substituters = https://cache.nixos.org/
+    trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+    require-sigs = true
   OPA_LINUX_AMD64_SHA256: 4814caaf89062b9929e7373c745eb1b73be8aa347be61da06491f68fe910245b
   OPA_VERSION: 1.20.1
   ROLLOUT_PHASE: ${{ vars.GHCFG_ROLLOUT_PHASE }}
-  USE_BAZEL_VERSION: 9.2.0
   TF_IN_AUTOMATION: "true"
   TF_INPUT: "false"
 
@@ -107,11 +112,34 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Configure Bazel
-        uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # v0.19.0
+      - name: Install pinned Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
-          bazelisk-cache: true
-          repository-cache: true
+          determinate: false
+          diagnostic-endpoint: ""
+          github-token: ""
+          kvm: false
+          nix-package-url: https://releases.nixos.org/nix/nix-2.31.2/nix-2.31.2-x86_64-linux.tar.xz
+          source-revision: 3477b9e591f27522d437d78b21cb857ce87dd6bb
+          summarize: false
+          trust-runner-user: false
+
+      - name: Materialize locked Bazel toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          nix config show --json | jq -e '
+            def config_value:
+              if type == "object" and has("value") then .value else . end;
+            (.substituters | config_value) == ["https://cache.nixos.org/"] and
+            (."trusted-public-keys" | config_value) ==
+              ["cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="] and
+            (."require-sigs" | config_value) == true and
+            (."accept-flake-config" | config_value) == false
+          ' >/dev/null
+          toolchain="$(nix build --no-accept-flake-config --no-link --no-update-lock-file --print-out-paths .#toolchain)"
+          test -x "$toolchain/bin/bazel"
+          printf '%s/bin\n' "$toolchain" >> "$GITHUB_PATH"
 
       - name: Configure OpenTofu
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
@@ -148,7 +176,7 @@ jobs:
           printf '%s  %s\n' "$OPA_LINUX_AMD64_SHA256" "$opa_path" \
             | sha256sum --check --strict
           chmod 0755 "$opa_path"
-          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+          bazel run --config=ci //compiler:github-configctl -- \
             --root "$GITHUB_WORKSPACE" policy-input \
             --output "$RUNNER_TEMP/policy-input.json"
           "$opa_path" test policy policy/tests
@@ -350,7 +378,7 @@ jobs:
           authority_root="$RUNNER_TEMP/canonical-workflow-authorities"
           test ! -e "$authority_root"
           install -d -m 0700 "$authority_root"
-          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+          bazel run --config=ci //compiler:github-configctl -- \
             compile --root "$GITHUB_WORKSPACE" \
             --output "$RUNNER_TEMP/authority-catalog.json"
           while IFS=$'\t' read -r repository revision implementation_revision state; do
@@ -399,7 +427,7 @@ jobs:
           )
           export MINDCLADE_AUTHORITY_ROOT="$authority_root"
           export MINDCLADE_REQUIRE_AUTHORITY_INVENTORIES=1
-          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+          bazel run --config=ci //compiler:github-configctl -- \
             validate --root "$GITHUB_WORKSPACE" > /dev/null
           {
             echo "MINDCLADE_AUTHORITY_ROOT=$authority_root"
@@ -420,13 +448,13 @@ jobs:
               exit 1
               ;;
           esac
-          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+          bazel run --config=ci //compiler:github-configctl -- \
             compile --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/catalog.json"
-          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+          bazel run --config=ci //compiler:github-configctl -- \
             observe --root "$GITHUB_WORKSPACE" --organization mindclade \
             --output "$RUNNER_TEMP/observed.json"
           set +e
-          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+          bazel run --config=ci //compiler:github-configctl -- \
             preflight --root "$GITHUB_WORKSPACE" --desired "$RUNNER_TEMP/catalog.json" \
             --observed "$RUNNER_TEMP/observed.json" --phase "$ROLLOUT_PHASE" \
             --output "$RUNNER_TEMP/preflight.json"
@@ -436,7 +464,7 @@ jobs:
             exit "$preflight_status"
           fi
           echo "preflight_exit=$preflight_status" >> "$GITHUB_ENV"
-          bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+          bazel run --config=ci //compiler:github-configctl -- \
             diff --root "$GITHUB_WORKSPACE" --desired "$RUNNER_TEMP/catalog.json" \
             --observed "$RUNNER_TEMP/observed.json" \
             --output "$RUNNER_TEMP/github-drift.json" || status=$?
@@ -512,7 +540,7 @@ jobs:
           expires_epoch="$((created_epoch + 21600))"
           (
             cd "$GITHUB_WORKSPACE"
-            bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            bazel run --config=ci //compiler:github-configctl -- \
               evidence --root "$GITHUB_WORKSPACE" --catalog "$RUNNER_TEMP/catalog.json" \
               --observed "$RUNNER_TEMP/observed.json" \
               --plan "$RUNNER_TEMP/plan.json" --plan-file "$RUNNER_TEMP/drift.tfplan" \
@@ -528,7 +556,7 @@ jobs:
               --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT" \
               --created-epoch "$created_epoch" --expires-epoch "$expires_epoch" \
               --output "$RUNNER_TEMP/drift-evidence.json"
-            bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+            bazel run --config=ci //compiler:github-configctl -- \
               verify-evidence --root "$GITHUB_WORKSPACE" \
               --input "$RUNNER_TEMP/drift-evidence.json" > /dev/null
           )

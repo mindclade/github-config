@@ -18,7 +18,9 @@ filegroup(
             "**/*.pyc",
             "bazel-*/**",
         ],
-    ) + ["//compiler:source_tree"],
+    ) + [
+        "//compiler:source_tree",
+    ],
 )
 
 filegroup(
@@ -44,6 +46,7 @@ genrule(
     srcs = [
         ":catalog_sources",
         ":workflow_sources",
+        "component.yaml",
     ],
     outs = ["policy-input.json"],
     cmd = """

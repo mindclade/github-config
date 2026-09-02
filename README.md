@@ -37,9 +37,9 @@ formatter, and toolchain/source checks while preserving Go modules, OpenTofu
 provider locks, and Bazel as their native dependency authorities:
 
 ```bash
-nix build --no-update-lock-file .#toolchain
-nix flake check --no-update-lock-file
-nix develop --no-update-lock-file .#ci --command just ci
+nix build --no-accept-flake-config --no-update-lock-file .#toolchain
+nix flake check --no-accept-flake-config --no-update-lock-file
+nix develop --no-accept-flake-config --no-update-lock-file .#ci --command just ci
 ```
 
 The root developer-quality interface is `just format`, `just format-check`,
@@ -155,9 +155,10 @@ just ci
 Equivalent focused commands are:
 
 ```sh
-USE_BAZEL_VERSION=9.2.0 bazelisk build //compiler:github-configctl --lockfile_mode=off
-USE_BAZEL_VERSION=9.2.0 bazelisk test //:presubmit \
-  --lockfile_mode=off --test_output=errors
+nix develop --no-accept-flake-config --no-update-lock-file .#ci --command \
+  bazel build --config=ci //compiler:github-configctl
+nix develop --no-accept-flake-config --no-update-lock-file .#ci --command \
+  bazel test --config=ci //:presubmit
 (cd compiler && go test -race ./... && go vet ./...)
 tofu fmt -check -recursive opentofu
 tofu -chdir=opentofu/live/organization init -backend=false -input=false
@@ -166,11 +167,16 @@ actionlint .github/workflows/*.yml
 buildifier -mode=check BUILD.bazel compiler/BUILD.bazel MODULE.bazel
 ```
 
-The strict blueprint intentionally has no Bazel, OpenTofu, or provider lock
-file. The repository pins exact top-level Bazel modules, action commits, and
-checksummed workflow tools. OpenTofu pins the exact provider version and
-relies on registry-published signed checksums during isolated initialization;
-protected evidence records the resolved execution identities.
+The committed `flake.lock` and `MODULE.bazel.lock` close the system-tool and
+Bazel module graphs respectively, and normal commands refuse to update either.
+The repository also pins action commits and checksummed workflow tools.
+OpenTofu pins the exact provider version and relies on registry-published
+signed checksums during isolated initialization; protected evidence records
+the resolved execution identities.
+
+Remote Bazel execution and remote caching are intentionally disabled. They may
+be enabled only for workers with the exact reviewed Nix store paths or an
+immutable, digest-pinned image built from this toolchain closure.
 
 ## Protected operations
 

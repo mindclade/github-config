@@ -18,11 +18,14 @@ Do not repair settings in the GitHub UI, run an ad hoc OpenTofu apply, change st
 3. Reproduce the observation with a read-only App identity:
 
    ```sh
-   bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+   nix develop --no-accept-flake-config --no-update-lock-file .#ci --command \
+     bazel run --config=ci //compiler:github-configctl -- \
      observe --organization mindclade --output observed.json
-   bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+   nix develop --no-accept-flake-config --no-update-lock-file .#ci --command \
+     bazel run --config=ci //compiler:github-configctl -- \
      compile --output catalog.json
-   bazelisk run //compiler:github-configctl --lockfile_mode=off -- \
+   nix develop --no-accept-flake-config --no-update-lock-file .#ci --command \
+     bazel run --config=ci //compiler:github-configctl -- \
      diff --desired catalog.json --observed observed.json
    ```
 

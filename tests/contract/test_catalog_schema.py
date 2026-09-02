@@ -764,6 +764,9 @@ class CatalogSchemaTest(unittest.TestCase):
 
     def test_repository_tree_matches_blueprint_inventory_exactly(self):
         expected = {
+            ".bazelignore",
+            ".bazelrc",
+            ".bazelversion",
             ".editorconfig",
             ".gitignore",
             ".golangci.yml",
@@ -776,6 +779,7 @@ class CatalogSchemaTest(unittest.TestCase):
             "CONTRIBUTING.md",
             "LICENSE",
             "MODULE.bazel",
+            "MODULE.bazel.lock",
             "README.md",
             "SECURITY.md",
             "component.yaml",
@@ -1125,7 +1129,9 @@ class CatalogSchemaTest(unittest.TestCase):
         link = root / "config" / "teams" / "linked.yaml"
         try:
             link.symlink_to(root / "config" / "teams" / "security.yaml")
-        except OSError, NotImplementedError:
+        except OSError:
+            self.skipTest("symlinks are unavailable")
+        except NotImplementedError:
             self.skipTest("symlinks are unavailable")
         result = invoke("validate", root=root)
         self.assertNotEqual(result.returncode, 0)
@@ -1510,7 +1516,7 @@ class CatalogSchemaTest(unittest.TestCase):
         actions = root / "config" / "actions-policy.yaml"
         actions.write_text(
             actions.read_text().replace(
-                "source: bazel-contrib/setup-bazel", "source: actions/checkout"
+                "source: opentofu/setup-opentofu", "source: actions/checkout"
             )
         )
         result = invoke("validate", root=root)
@@ -1529,7 +1535,8 @@ class CatalogSchemaTest(unittest.TestCase):
         workflow = root / ".github" / "workflows" / "pull-request.yml"
         workflow.write_text(
             workflow.read_text().replace(
-                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "mindclade/.github/.github/workflows/reusable-nix-validation.yml@"
+                "c097ef86c25991a400050c13e78574e8d3d8c071",
                 "mindclade/.github/.github/workflows/reusable-required-check.yml@" + "a" * 40,
                 1,
             )
@@ -1548,7 +1555,8 @@ class CatalogSchemaTest(unittest.TestCase):
         ).group(1)
         workflow.write_text(
             workflow.read_text().replace(
-                "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+                "mindclade/.github/.github/workflows/reusable-nix-validation.yml@"
+                "c097ef86c25991a400050c13e78574e8d3d8c071",
                 "mindclade/.github/.github/workflows/not-declared.yml@" + implementation_revision,
                 1,
             )
@@ -1708,6 +1716,18 @@ class CatalogSchemaTest(unittest.TestCase):
         result = invoke("validate", root=root)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("exceeds max_permission", result.stderr)
+
+    def test_ci_revalidates_exact_main_before_privileged_jobs(self):
+        pull_request = (ROOT / ".github/workflows/pull-request.yml").read_text()
+        protected_apply = (ROOT / ".github/workflows/protected-apply.yml").read_text()
+
+        self.assertIn("push:\n    branches: [main]", pull_request)
+        self.assertIn("accept-flake-config = false", protected_apply)
+        validation = (
+            "nix develop --no-accept-flake-config --no-update-lock-file .#ci --command just ci"
+        )
+        self.assertIn(validation, protected_apply)
+        self.assertLess(protected_apply.index(validation), protected_apply.index("\n  plan:\n"))
 
     def test_qualified_integration_attestation_is_self_digesting_and_time_bounded(self):
         root = self.temporary_catalog()

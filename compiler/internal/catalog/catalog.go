@@ -108,7 +108,7 @@ var canonicalWorkflowInventories = map[string][]string{
 		"reusable-nix-validation.yml",
 		"reusable-metadata-validation.yml", "reusable-documentation-check.yml",
 		"reusable-dependency-review.yml", "reusable-codeql.yml",
-		"reusable-scorecard.yml", "self-test.yml",
+		"reusable-scorecard.yml", "pull-request.yml",
 	},
 	"bootstrap": {
 		"pull-request.yml", "recovery-verification.yml", "protected-apply.yml",
