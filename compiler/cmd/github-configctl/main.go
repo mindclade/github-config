@@ -29,14 +29,18 @@ const usage = `Usage:
   github-configctl [--root REPOSITORY] validate
   github-configctl [--root REPOSITORY] compile --output PATH [--tofu-var-file PATH]
   github-configctl [--root REPOSITORY] policy-input --output PATH
-  github-configctl [--root REPOSITORY] observe --organization ORG --output PATH
-  github-configctl [--root REPOSITORY] diff --desired PATH --observed PATH [--output PATH]
+  github-configctl [--root REPOSITORY] observe --organization ORG --output PATH [--scope critical|full]
+  github-configctl [--root REPOSITORY] diff --desired PATH --observed PATH [--output PATH] [--scope critical|full]
   github-configctl [--root REPOSITORY] doctor [--organization ORG | --observed PATH] --output PATH --markdown-output PATH [--authority-root PATH] [--require-authorities]
   github-configctl [--root REPOSITORY] workflow-contract [--authority-root PATH] [--require-authorities] [--candidate-repository NAME --candidate-root PATH] [--output PATH]
   github-configctl [--root REPOSITORY] founder-bypass-policy --output PATH
   github-configctl [--root REPOSITORY] evidence --plan PATH [--plan-file PATH] [--catalog PATH] [--observed PATH] [--phase PHASE] --output PATH
   github-configctl [--root REPOSITORY] verify-evidence --input PATH
   github-configctl [--root REPOSITORY] preflight --desired PATH --observed PATH [--phase adopt|foundation|enforce] [--output PATH]
+
+--scope defaults to full, which reconciles the whole catalog. The critical scope
+observes only organization-level merge-gating controls and makes no
+per-repository call, so it is cheap enough to run hourly.
 
 The --root flag may appear before or after the command. PATH may be - for stdout
 where an output flag accepts it. Exit code 2 means drift or a blocked preflight.
@@ -167,7 +171,7 @@ func runDoctor(root string, arguments []string, stdout, stderr io.Writer) int {
 		defer cancel()
 		observed, err = githubdiff.Observe(
 			contextWithTimeout, *organization, os.Getenv("GITHUB_API_URL"),
-			os.Getenv("GITHUB_TOKEN"), repositories, desired,
+			os.Getenv("GITHUB_TOKEN"), githubdiff.ScopeFull, repositories, desired,
 		)
 	}
 	if err != nil {
@@ -304,11 +308,15 @@ func runObserve(root string, arguments []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("observe", stderr)
 	organization := flags.String("organization", "", "GitHub organization login")
 	output := flags.String("output", "", "observed state output path")
+	scope := flags.String("scope", githubdiff.ScopeFull, "observation scope: critical or full")
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 {
 		return 1
 	}
 	if *organization == "" || *output == "" {
 		return reportError(stderr, errors.New("observe requires --organization and --output"))
+	}
+	if !githubdiff.ValidScope(*scope) {
+		return reportError(stderr, errors.New("observe --scope must be critical or full"))
 	}
 	compiled, err := catalog.Compile(root)
 	if err != nil {
@@ -324,11 +332,15 @@ func runObserve(root string, arguments []string, stdout, stderr io.Writer) int {
 		repositories = append(repositories, name)
 	}
 	sort.Strings(repositories)
-	contextWithTimeout, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	budget := 2 * time.Minute
+	if *scope == githubdiff.ScopeCritical {
+		budget = 30 * time.Second
+	}
+	contextWithTimeout, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	observed, err := githubdiff.Observe(
 		contextWithTimeout, *organization, os.Getenv("GITHUB_API_URL"),
-		os.Getenv("GITHUB_TOKEN"), repositories, compiled.AsMap(),
+		os.Getenv("GITHUB_TOKEN"), *scope, repositories, compiled.AsMap(),
 	)
 	if err != nil {
 		return reportError(stderr, err)
@@ -341,6 +353,7 @@ func runObserve(root string, arguments []string, stdout, stderr io.Writer) int {
 
 func runDiff(arguments []string, stdout, stderr io.Writer) int {
 	flags := newFlagSet("diff", stderr)
+	scope := flags.String("scope", githubdiff.ScopeFull, "expected observation scope: critical or full")
 	desiredPath := flags.String("desired", "", "compiled desired JSON path")
 	observedPath := flags.String("observed", "", "observed JSON path")
 	output := flags.String("output", "-", "drift report path")
@@ -350,6 +363,9 @@ func runDiff(arguments []string, stdout, stderr io.Writer) int {
 	if *desiredPath == "" || *observedPath == "" {
 		return reportError(stderr, errors.New("diff requires --desired and --observed"))
 	}
+	if !githubdiff.ValidScope(*scope) {
+		return reportError(stderr, errors.New("diff --scope must be critical or full"))
+	}
 	desired, err := readJSONPath(*desiredPath)
 	if err != nil {
 		return reportError(stderr, fmt.Errorf("read desired state: %w", err))
@@ -357,6 +373,17 @@ func runDiff(arguments []string, stdout, stderr io.Writer) int {
 	observed, err := readJSONPath(*observedPath)
 	if err != nil {
 		return reportError(stderr, fmt.Errorf("read observed state: %w", err))
+	}
+	// An observation taken at critical scope omits every per-repository control.
+	// Comparing it as if it were complete would report the whole catalog as
+	// missing, so the caller must declare the scope it expects.
+	observedScope, _ := observed["observation_scope"].(string)
+	if observedScope == "" {
+		observedScope = githubdiff.ScopeFull
+	}
+	if observedScope != *scope {
+		return reportError(stderr, fmt.Errorf(
+			"observation scope is %q but --scope is %q", observedScope, *scope))
 	}
 	report := githubdiff.Report(desired, observed)
 	if err := rendering.WriteJSON(*output, report, stdout); err != nil {

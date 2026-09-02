@@ -2,7 +2,11 @@ name: Drift detection
 
 on:
   schedule:
-    # One complete nightly diagnostic is the canonical drift signal.
+    # Hourly critical observation of the organization-level controls that gate
+    # merges into protected main. Makes no per-repository call and installs no
+    # Nix, Bazel, OpenTofu, or OPA.
+    - cron: "41 * * * *"
+    # One complete nightly diagnostic remains the canonical drift signal.
     - cron: "23 5 * * *"
   workflow_dispatch:
 
@@ -27,9 +31,105 @@ env:
   TF_INPUT: "false"
 
 jobs:
+  critical:
+    name: critical controls
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event.schedule == '41 * * * *'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Bind the runner identity before any third-party action
+        env:
+          APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          INSTALLATION_ID: ${{ vars.GHCFG_PLAN_APP_INSTALLATION_ID }}
+          KEY_SECRET: ${{ vars.GHCFG_PLAN_APP_KEY_SECRET }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/main"
+          [[ "${APP_ID}" =~ ^[0-9]+$ ]]
+          [[ "${INSTALLATION_ID}" =~ ^[0-9]+$ ]]
+          [[ -n "${KEY_SECRET}" && -n "${SERVICE_ACCOUNT}" && -n "${WIF_PROVIDER}" ]]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v6.0.0
+        with:
+          go-version-file: compiler/go.mod
+          cache: false
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          audience: sts.googleapis.com
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - id: app-key
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            private_key:${{ vars.GHCFG_PLAN_APP_KEY_SECRET }}
+
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.GHCFG_PLAN_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.private_key }}
+          owner: mindclade
+          # Critical scope makes no per-repository call, so the installation token
+          # is narrowed to this repository; only the organization-level read
+          # permissions below are actually exercised.
+          repositories: |-
+            github-config
+          permission-administration: read
+          permission-metadata: read
+          permission-organization-administration: read
+
+      - name: Observe and compare the critical controls
+        id: critical
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          go -C compiler build -o "$RUNNER_TEMP/github-configctl" ./cmd/github-configctl
+          "$RUNNER_TEMP/github-configctl" --root "$GITHUB_WORKSPACE" \
+            compile --output "$RUNNER_TEMP/catalog.json"
+          "$RUNNER_TEMP/github-configctl" --root "$GITHUB_WORKSPACE" \
+            observe --organization mindclade --scope critical \
+            --output "$RUNNER_TEMP/observed.json"
+          status=0
+          "$RUNNER_TEMP/github-configctl" --root "$GITHUB_WORKSPACE" \
+            diff --desired "$RUNNER_TEMP/catalog.json" \
+            --observed "$RUNNER_TEMP/observed.json" --scope critical \
+            --output "$RUNNER_TEMP/critical-drift.json" || status=$?
+          if [[ "$status" != "0" && "$status" != "2" ]]; then
+            exit "$status"
+          fi
+          printf 'drift=%s\n' "$status" >> "$GITHUB_OUTPUT"
+
+      - name: Fail on critical drift
+        if: steps.critical.outputs.drift == '2'
+        run: |
+          echo "Critical governance controls drifted; the nightly full run has detail." >&2
+          exit 1
+
   drift:
     name: observe and compare
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main'
+      && github.event.schedule != '41 * * * *'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:

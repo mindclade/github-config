@@ -78,10 +78,44 @@ func ReadJSON(reader io.Reader) (map[string]any, error) {
 }
 
 // Report returns a stable, redacted drift report.
+// Observation scopes. The full scope reconciles the entire catalog and is the
+// compatibility default. The critical scope observes only the organization-level
+// controls that gate merges into protected main, so it can run hourly without
+// the per-repository fan-out, OpenTofu, OPA, or Bazel.
+const (
+	ScopeFull     = "full"
+	ScopeCritical = "critical"
+)
+
+// criticalProjectionKeys is the exact surface the critical scope reconciles.
+// Anything outside it is reconciled by the daily full scope, and must not be
+// read as drift merely because the critical scope did not observe it.
+var criticalProjectionKeys = []string{"projection_version", "actions_policy", "rulesets", "organization"}
+
+// ValidScope reports whether a scope name is one this tool implements.
+func ValidScope(scope string) bool {
+	return scope == ScopeFull || scope == ScopeCritical
+}
+
+func narrowToCritical(projection map[string]any) map[string]any {
+	narrowed := make(map[string]any, len(criticalProjectionKeys))
+	for _, key := range criticalProjectionKeys {
+		if value, ok := projection[key]; ok {
+			narrowed[key] = value
+		}
+	}
+	return narrowed
+}
+
 func Report(desired, observed map[string]any) map[string]any {
+	critical := textValue(observed["observation_scope"]) == ScopeCritical
 	if managed, ok := observed["managed_projection"].(map[string]any); ok {
 		desired = ManagedProjection(desired)
 		observed = managed
+	}
+	if critical {
+		desired = narrowToCritical(desired)
+		observed = narrowToCritical(observed)
 	}
 	changes := make([]map[string]any, 0)
 	compare(normalize(desired), normalize(observed), "", &changes)
@@ -415,7 +449,7 @@ func isLoopbackHost(host string) bool {
 
 // Observe performs bounded, read-only GitHub REST calls. Responses are reduced
 // to governance-relevant fields and recursively redacted before serialization.
-func Observe(ctx context.Context, organization, apiBase, token string, repositoryNames []string, desired map[string]any) (map[string]any, error) {
+func Observe(ctx context.Context, organization, apiBase, token, scope string, repositoryNames []string, desired map[string]any) (map[string]any, error) {
 	if !organizationPattern.MatchString(organization) {
 		return nil, errors.New("organization is not a valid GitHub organization login")
 	}
@@ -636,6 +670,11 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		}
 	}
 	sort.Strings(repositoryNames)
+	// The critical scope deliberately makes no per-repository call. Each repository
+	// costs 13 requests; skipping the loop is what makes an hourly cadence viable.
+	if scope == ScopeCritical {
+		repositoryNames = nil
+	}
 	for _, repository := range repositoryNames {
 		if _, exists := liveRepositoryNames[repository]; !exists {
 			continue
@@ -830,6 +869,7 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		recordCapabilityError("founder_pr_bypass_audit", errors.New("audit evidence is incomplete"))
 	}
 	result := map[string]any{
+		"observation_scope":              scope,
 		"api_version":                    validation.APIVersion,
 		"kind":                           "GitHubObservedState",
 		"core_observation_complete":      repositoryInventoryComplete,

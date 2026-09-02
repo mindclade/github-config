@@ -317,6 +317,64 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertIn("/repositories/github-config/actions_access_level", paths)
             self.assertIn("/organization/custom_properties", paths)
 
+    def test_critical_scope_narrows_the_comparison_and_refuses_scope_confusion(self):
+        """A critical observation must never be compared as if it were complete.
+
+        Critical scope makes no per-repository call, so its observation legitimately
+        omits every repository control. Comparing it at full scope would report the
+        whole catalog as missing drift; the tool refuses instead of guessing.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            desired = workspace / "desired.json"
+            observed = workspace / "observed.json"
+            report = workspace / "report.json"
+            self.assertEqual(invoke("compile", "--output", str(desired)).returncode, 0)
+
+            projection = json.loads(desired.read_text())
+            full = self.managed_projection(projection)
+            critical = {
+                key: value
+                for key, value in full.items()
+                if key in {"projection_version", "actions_policy", "rulesets", "organization"}
+            }
+            observed.write_text(
+                json.dumps(
+                    {"observation_scope": "critical", "managed_projection": critical}
+                )
+            )
+
+            # Compared at the scope it was taken at, a critical observation is clean
+            # even though it carries no repository data at all.
+            clean = invoke(
+                "diff", "--desired", str(desired), "--observed", str(observed),
+                "--output", str(report), "--scope", "critical",
+            )
+            self.assertEqual(clean.returncode, 0, clean.stderr)
+            self.assertEqual(json.loads(report.read_text())["status"], "clean")
+
+            # Compared as complete, it is refused rather than reported as drift.
+            confused = invoke(
+                "diff", "--desired", str(desired), "--observed", str(observed),
+                "--output", str(report),
+            )
+            self.assertEqual(confused.returncode, 1)
+            self.assertIn("observation scope", confused.stderr)
+
+            # And a full observation may not be passed off as a critical one.
+            observed.write_text(json.dumps({"managed_projection": full}))
+            reversed_confusion = invoke(
+                "diff", "--desired", str(desired), "--observed", str(observed),
+                "--output", str(report), "--scope", "critical",
+            )
+            self.assertEqual(reversed_confusion.returncode, 1)
+
+            rejected = invoke(
+                "diff", "--desired", str(desired), "--observed", str(observed),
+                "--output", str(report), "--scope", "partial",
+            )
+            self.assertEqual(rejected.returncode, 1)
+
     def test_mixed_repository_actions_access_projection_is_explicit_and_closed_world(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
