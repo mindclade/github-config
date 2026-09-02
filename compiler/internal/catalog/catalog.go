@@ -103,6 +103,7 @@ var sourceDefinitions = []sourceDefinition{
 
 var schemaFiles = []string{
 	"actions_policy.schema.json",
+	"ci_usage_report.schema.json",
 	"environment.schema.json",
 	"founder_pr_bypass_evidence.schema.json",
 	"integration.schema.json",
@@ -119,8 +120,8 @@ var schemaFiles = []string{
 // whose external Action pins are governed by config/actions-policy.yaml.
 var canonicalWorkflowInventories = map[string][]string{
 	"github-config": {
-		"drift-detection.yml", "protected-apply.yml", "pull-request.yml",
-		"renovate.yml",
+		"ci-usage-report.yml", "drift-detection.yml", "protected-apply.yml",
+		"pull-request.yml", "renovate.yml",
 	},
 	".github": {
 		"reusable-buildkite-dispatch.yml", "reusable-required-check.yml",

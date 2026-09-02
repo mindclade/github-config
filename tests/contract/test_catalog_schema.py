@@ -894,6 +894,7 @@ class CatalogSchemaTest(unittest.TestCase):
             ".github/workflows/drift-detection.yml",
             ".github/workflows/protected-apply.yml",
             ".github/workflows/renovate.yml",
+            ".github/workflows/ci-usage-report.yml",
             "config/organization.yaml",
             "config/actions-policy.yaml",
             "config/security-policy.yaml",
@@ -969,8 +970,10 @@ class CatalogSchemaTest(unittest.TestCase):
                     "environment",
                     "founder_pr_bypass_evidence",
                     "integration",
+                    "ci_usage_report",
                 )
             },
+            "tools/ci_usage_report.py",
             "tools/sync_authority_revisions.py",
             "compiler/cmd/github-configctl/main.go",
             "compiler/internal/catalog/catalog.go",
@@ -1031,6 +1034,7 @@ class CatalogSchemaTest(unittest.TestCase):
                 )
             },
             "tests/contract/test_catalog_schema.py",
+            "tests/contract/test_ci_usage_report.py",
             "tests/contract/test_compiler_determinism.py",
             "tests/plan/test_ruleset_plan.py",
             "tests/plan/test_permission_reduction.py",
@@ -1099,7 +1103,15 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(len(policy_input["rulesets"]), 5)
         self.assertNotIn("repository_gates", policy_input)
         self.assertEqual(len(policy_input["environments"]), 4)
-        self.assertEqual(len(policy_input["workflows"]), 4)
+        # Every workflow this repository defines must reach source-pinning policy.
+        # A count cannot detect a workflow that exists on disk but was never
+        # registered in the canonical inventory, which is exactly how an
+        # unreviewed action reference would escape review.
+        self.assertEqual(
+            {workflow["name"] for workflow in policy_input["workflows"]},
+            {path.name for path in (ROOT / ".github/workflows").glob("*.yml")},
+            "policy input must cover every workflow in .github/workflows",
+        )
         self.assertTrue(all(workflow["uses"] for workflow in policy_input["workflows"]))
         self.assertNotIn(
             "pull_request_target",

@@ -1,0 +1,144 @@
+name: CI usage report
+
+"on":
+  schedule:
+    # Weekly telemetry. This workflow never gates anything; it reports.
+    - cron: "53 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: estate-ci-usage-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: measure
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      alerting: ${{ steps.measure.outputs.alerting }}
+    steps:
+      - name: Bind the runner identity before any third-party action
+        env:
+          APP_ID: ${{ vars.GHCFG_PLAN_APP_ID }}
+          KEY_SECRET: ${{ vars.GHCFG_PLAN_APP_KEY_SECRET }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/main"
+          [[ "${APP_ID}" =~ ^[0-9]+$ ]]
+          [[ -n "${KEY_SECRET}" && -n "${SERVICE_ACCOUNT}" && -n "${WIF_PROVIDER}" ]]
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          audience: sts.googleapis.com
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_PLAN }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_PLAN }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - id: app-key
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            private_key:${{ vars.GHCFG_PLAN_APP_KEY_SECRET }}
+
+      - id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.GHCFG_PLAN_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.private_key }}
+          owner: mindclade
+          repositories: |-
+            github-config
+          permission-administration: read
+          permission-metadata: read
+          permission-organization-administration: read
+          permission-organization-plan: read
+
+      - name: Recover the previous week as a baseline
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          previous="$(gh run list --workflow ci-usage-report.yml --status success \
+            --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [[ -n "${previous}" ]]; then
+            gh run download "${previous}" --name ci-usage-report --dir "${RUNNER_TEMP}/baseline" || true
+          fi
+
+      - name: Measure organization CI usage
+        id: measure
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 tools/ci_usage_report.py \
+            --organization mindclade \
+            --source-revision "${GITHUB_SHA}" \
+            --baseline "${RUNNER_TEMP}/baseline/ci-usage-report.json" \
+            --output "${RUNNER_TEMP}/ci-usage-report.json" \
+            --markdown-output "${RUNNER_TEMP}/ci-usage-report.md"
+          cat "${RUNNER_TEMP}/ci-usage-report.md" >> "${GITHUB_STEP_SUMMARY}"
+          alerting="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["spec"]["alerting"])' "${RUNNER_TEMP}/ci-usage-report.json")"
+          printf 'alerting=%s\n' "${alerting}" >> "${GITHUB_OUTPUT}"
+
+      - name: Retain the report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-usage-report
+          path: ${{ runner.temp }}/ci-usage-report.json
+          if-no-files-found: error
+          retention-days: 90
+
+  notify:
+    name: reconcile usage issue
+    needs: report
+    if: always() && needs.report.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open, update, or close the canonical usage issue
+        env:
+          ALERTING: ${{ needs.report.outputs.alerting }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          marker="<!-- github-config-ci-usage:v1 -->"
+          title="CI usage growth exceeded a reporting threshold"
+          issue_number="$(gh api --method GET /search/issues \
+            -f q="repo:${GITHUB_REPOSITORY} is:issue is:open in:body \"github-config-ci-usage:v1\"" \
+            --jq '[.items[].number] | sort | .[0] // empty')"
+          if [[ "${ALERTING}" != "True" ]]; then
+            if [[ -n "${issue_number}" ]]; then
+              gh issue close "${issue_number}" --reason completed \
+                --comment "Usage returned below every threshold on ${GITHUB_SHA}."
+            fi
+            exit 0
+          fi
+          body="$(printf '%s\n\nCI usage exceeded a reporting threshold. The measured report is attached to run %s.\n' \
+            "${marker}" "${GITHUB_RUN_ID}")"
+          if [[ -n "${issue_number}" ]]; then
+            gh issue edit "${issue_number}" --title "${title}" --body "${body}"
+          else
+            gh issue create --title "${title}" --body "${body}"
+          fi

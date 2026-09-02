@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.mindclade.io/schemas/v1/ci_usage_report.schema.json",
+  "title": "Mindclade CI usage report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["api_version", "kind", "metadata", "spec"],
+  "properties": {
+    "api_version": { "const": "github.mindclade.io/v1" },
+    "kind": { "const": "CiUsageReport" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "spec": { "$ref": "#/$defs/spec" }
+  },
+  "$defs": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["organization", "observed_at", "window_days", "source_revision"],
+      "properties": {
+        "organization": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9-]{0,38}$" },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "window_days": { "const": 30 },
+        "source_revision": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["current", "baseline", "delta_absolute", "delta_ratio", "observed"],
+      "properties": {
+        "current": { "type": "number", "minimum": 0 },
+        "baseline": { "type": "number", "minimum": 0 },
+        "delta_absolute": { "type": "number" },
+        "delta_ratio": { "type": "number" },
+        "observed": { "type": "boolean" }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minutes",
+        "job_starts",
+        "cache_bytes",
+        "cache_limit_bytes",
+        "artifact_bytes",
+        "alerts",
+        "alerting"
+      ],
+      "properties": {
+        "minutes": { "$ref": "#/$defs/measurement" },
+        "job_starts": { "$ref": "#/$defs/measurement" },
+        "cache_bytes": { "$ref": "#/$defs/measurement" },
+        "cache_limit_bytes": { "type": "number", "minimum": 0 },
+        "artifact_bytes": { "$ref": "#/$defs/measurement" },
+        "alerts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "minutes_growth",
+              "job_start_growth",
+              "cache_utilization",
+              "artifact_growth"
+            ]
+          }
+        },
+        "alerting": { "type": "boolean" }
+      }
+    }
+  }
+}
