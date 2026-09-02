@@ -1,27 +1,25 @@
 api_version: github.mindclade.io/v1
 kind: Integration
 metadata:
-  id: buildkite
-  owner_team: developer-platform
+  id: estate-ci-observer
+  owner_team: security
 spec:
   type: github_app
   managed: false
   credential_authority: bootstrap
   plaintext_credentials_forbidden: true
   repository_selection: selected
-  repositories: [estate-ci, mindclade]
+  repositories: [.github, bootstrap, estate-ci, github-config, gitops, infrastructure-live, mindclade]
   permissions:
+    - name: actions
+      access: read
     - name: checks
-      access: write
+      access: read
     - name: contents
       access: read
     - name: metadata
       access: read
-    - name: pull_requests
-      access: read
-    - name: statuses
-      access: write
-  events: [check_run, check_suite, pull_request, push]
+  events: [workflow_run]
   qualification:
     state: blocked
     authority: bootstrap

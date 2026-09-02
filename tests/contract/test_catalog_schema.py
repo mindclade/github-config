@@ -947,6 +947,7 @@ class CatalogSchemaTest(unittest.TestCase):
                 f"config/environments/{name}.yaml"
                 for name in (
                     "trusted-build",
+                    "estate-health",
                     "release-signing",
                     "infrastructure-apply",
                     "production-promotion",
@@ -954,7 +955,14 @@ class CatalogSchemaTest(unittest.TestCase):
             },
             *{
                 f"config/integrations/{name}.yaml"
-                for name in ("buildkite", "artifact-signing", "gitops-controller", "renovate")
+                for name in (
+                    "buildkite",
+                    "estate-ci-observer",
+                    "estate-ci-dispatcher",
+                    "artifact-signing",
+                    "gitops-controller",
+                    "renovate",
+                )
             },
             *{
                 f"schemas/v1/{name}.schema.json"
@@ -1103,7 +1111,7 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(len(policy_input["repositories"]), 7)
         self.assertEqual(len(policy_input["rulesets"]), 5)
         self.assertNotIn("repository_gates", policy_input)
-        self.assertEqual(len(policy_input["environments"]), 4)
+        self.assertEqual(len(policy_input["environments"]), 5)
         # Every workflow this repository defines must reach source-pinning policy.
         # A count cannot detect a workflow that exists on disk but was never
         # registered in the canonical inventory, which is exactly how an
@@ -1867,7 +1875,10 @@ class CatalogSchemaTest(unittest.TestCase):
             "app_id": 123,
             "installation_id": 456,
             "repository_selection": "selected",
-            "repositories": [{"name": "mindclade", "id": 789}],
+            "repositories": [
+                {"name": "estate-ci", "id": 788},
+                {"name": "mindclade", "id": 789},
+            ],
             "permissions": [
                 {"name": "checks", "access": "write"},
                 {"name": "contents", "access": "read"},
@@ -1904,6 +1915,8 @@ class CatalogSchemaTest(unittest.TestCase):
       installation_id: 456
       repository_selection: selected
       repositories:
+        - name: estate-ci
+          id: 788
         - name: mindclade
           id: 789
       permissions:
