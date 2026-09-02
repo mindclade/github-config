@@ -97,6 +97,31 @@ The visible `developer-platform` and `security` teams retain `maintain` and
 `push` access respectively so both `.github/CODEOWNERS` entries can resolve
 once connected team membership is qualified.
 
+Each repository declares `security.code_scanning_mode`, which is `default` or
+`advanced` and never both. GitHub's default setup and a repository-owned
+advanced CodeQL workflow are mutually exclusive on the same repository, so the
+organization-wide `code_scanning_default_setup_required` policy is asserted only
+of the repositories that chose `default`. `mindclade` is `advanced` because it
+runs its own analysis; every other repository is `default`. Policy denies a
+repository that selects `advanced` without advanced security enabled, since
+advanced analysis uploads SARIF.
+
+Dependency updates are proposed by a single organization-wide Renovate pass
+defined in `.github/workflows/renovate.yml` and configured by
+`.github/renovate-runner.json`. Dependabot is retired: no repository declares it,
+no catalog document requires it, and the observer makes no request to its
+endpoints. Renovate's only permitted unsafe execution is `bazelModDeps`; arbitrary
+post-upgrade commands, plugins, and package scripts are all forbidden. Dependency
+pull requests take the same review and required checks as any other change, and
+automerge is disabled.
+
+`.github/workflows/ci-usage-report.yml` emits a weekly `CiUsageReport/v1`
+covering Actions minutes, job starts, cache utilisation, and artifact storage
+over a 30-day window. It is telemetry and gates nothing. Every growth threshold
+pairs a ratio with an absolute floor and requires both, so a small estate cannot
+trip an alert by doubling a small number; a measurement that could not be
+collected is recorded as not observed rather than as zero.
+
 Custom-property enum changes use two source-reviewed phases. `preserve` unions
 explicit legacy values with desired definitions before repository assignments
 are reconciled. Enforcement stays blocked in that phase. Only after a complete
@@ -142,8 +167,8 @@ service account keep verification authority separate from apply authority.
 ```text
 github-configctl validate
 github-configctl compile --output catalog.json
-github-configctl observe --organization mindclade --output observed.json
-github-configctl diff --desired catalog.json --observed observed.json
+github-configctl observe --organization mindclade --output observed.json [--scope critical|full]
+github-configctl diff --desired catalog.json --observed observed.json [--scope critical|full]
 github-configctl doctor --observed observed.json --output doctor.json \
   --markdown-output doctor.md --authority-root ../
 github-configctl workflow-contract --authority-root ../ --output workflow-contract.json
@@ -161,7 +186,22 @@ github-configctl verify-evidence --input receipt.json
 `validate` and `compile` are provider-free. `observe` is the only networked
 command; it accepts a token only through `GITHUB_TOKEN`, performs bounded GET
 requests, and emits a redacted snapshot. `diff` returns `0` for equality, `2`
-for drift, and `1` for an operational error. `preflight` is stricter than
+for drift, and `1` for an operational error.
+
+`--scope` selects how much of the catalog is reconciled and defaults to `full`,
+so every existing caller is unchanged. The `full` scope observes the whole
+catalog: roughly 22 organization-level requests plus 13 per repository. The
+`critical` scope observes only the organization-level controls that gate merges
+into protected main and makes no per-repository request at all, which is what
+makes an hourly cadence affordable; it runs on a 30-second budget and needs no
+Nix, Bazel, OpenTofu, or OPA. Drift detection runs `critical` hourly and `full`
+nightly.
+
+Scope confusion is refused rather than guessed at. A critical observation
+legitimately omits every repository control, so comparing it as though it were
+complete would report the entire catalog as missing. The observation records
+the scope it was taken at, `diff` requires the caller to declare the scope it
+expects, and a mismatch in either direction is an operational error. `preflight` is stricter than
 source validation and denies connected activation when licensing, identities,
 reviewers, integrations, or observations are incomplete. A core observation
 is complete only when the unique repository enumeration equals GitHub's
