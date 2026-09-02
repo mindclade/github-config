@@ -57,6 +57,9 @@ tofu-check:
 workflow-lint:
     actionlint .github/workflows/*.yml
 
+workflow-contract:
+    temporary="$(mktemp -d)"; trap 'rm -rf "$temporary"' EXIT; cd compiler; go run ./cmd/github-configctl --root .. workflow-contract --output "$temporary/workflow-contract.json"
+
 bazel-format:
     git ls-files 'BUILD.bazel' 'MODULE.bazel' '*.bzl' | xargs buildifier -mode=check -lint=warn
 
@@ -66,6 +69,6 @@ whitespace-check:
 flake-check:
     nix flake check --no-accept-flake-config --no-build --no-update-lock-file
 
-check: format-check lint validate go-test python-test bazel-test policy-test tofu-check whitespace-check flake-check
+check: format-check lint validate workflow-contract go-test python-test bazel-test policy-test tofu-check whitespace-check flake-check
 
 ci: check

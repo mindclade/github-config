@@ -12,14 +12,15 @@ spec:
   code_scanning_default_setup_required: true
   secret_scanning_required: true
   secret_scanning_push_protection_required: true
-  # GitHub private vulnerability reporting applies to this public estate.
+  # GitHub private vulnerability reporting remains required across the mixed estate.
   private_vulnerability_reporting_required: true
   required_capabilities:
+    - github-enterprise-cloud
     - github-advanced-security
   activation:
     state: blocked
     blockers:
-      - public-repository-security-capabilities-not-qualified
+      - enterprise-repository-security-capabilities-not-qualified
       - two-factor-enforcement-not-qualified
       - independent-security-reviewer-required
       - provider-control-parity-not-qualified

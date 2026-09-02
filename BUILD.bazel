@@ -24,11 +24,21 @@ filegroup(
 )
 
 filegroup(
+    name = "generated_policy_sources",
+    srcs = [
+        "generated/bazelrc.common",
+        "generated/nix-bazel-policy.lock.json",
+        "generated/nix-bazel-policy.nix",
+        "generated/toolchain-manifest.defaults.json",
+    ],
+)
+
+filegroup(
     name = "catalog_sources",
     srcs = glob([
         "config/**/*.yaml",
         "schemas/v1/*.json",
-    ]),
+    ]) + [":generated_policy_sources"],
 )
 
 filegroup(
@@ -154,6 +164,10 @@ test_suite(
         ":observed_state_diff_test",
         ":permission_reduction_test",
         ":ruleset_plan_test",
+        "//compiler:doctor_test",
+        "//compiler:founder_bypass_test",
+        "//compiler:github_diff_test",
+        "//compiler:workflow_contract_test",
     ],
     visibility = ["//visibility:public"],
 )

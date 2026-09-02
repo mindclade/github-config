@@ -52,8 +52,14 @@ func WriteJSON(path string, value any, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	return WriteText(path, data, stdout)
+}
+
+// WriteText atomically writes a private generated report. A path of "-"
+// writes to stdout, and existing symlink targets are rejected.
+func WriteText(path string, data []byte, stdout io.Writer) error {
 	if path == "-" {
-		_, err = stdout.Write(data)
+		_, err := stdout.Write(data)
 		return err
 	}
 	if path == "" {

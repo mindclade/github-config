@@ -43,16 +43,32 @@ class RulesetPlanTest(unittest.TestCase):
                 "release-tags",
             },
         )
+        founder_bypass = [
+            {
+                "actor": "founder-pr-bypass",
+                "actor_type": "team",
+                "mode": "pull_request",
+            }
+        ]
         for name, ruleset in catalog["rulesets"].items():
             self.assertEqual(ruleset["enforcement"], "active", name)
-            self.assertEqual(ruleset["bypass_actors"], [], name)
             rules = ruleset["rules"]
             self.assertTrue(rules["deletion"], name)
             self.assertTrue(rules["non_fast_forward"], name)
             if ruleset["target"] == "branch":
+                self.assertEqual(ruleset["bypass_actors"], founder_bypass, name)
                 self.assertTrue(rules["required_signatures"], name)
                 self.assertTrue(rules["required_linear_history"], name)
                 self.assertTrue(rules["merge_queue"], name)
+                self.assertEqual(
+                    rules["required_workflow"],
+                    {
+                        "repository": "dot-github",
+                        "path": ".github/workflows/pull-request.yml",
+                        "ref": "refs/heads/main",
+                    },
+                    name,
+                )
                 pull_request = rules["pull_request"]
                 self.assertGreaterEqual(pull_request["required_approving_review_count"], 2)
                 self.assertTrue(pull_request["require_code_owner_review"])
@@ -62,10 +78,11 @@ class RulesetPlanTest(unittest.TestCase):
                 for check in checks:
                     self.assertEqual(set(check["triggers"]), {"pull_request", "merge_group"})
             else:
+                self.assertEqual(ruleset["bypass_actors"], [], name)
                 self.assertTrue(rules["update"], name)
 
         application = catalog["rulesets"]["application-source"]
-        self.assertEqual(application["bypass_actors"], [])
+        self.assertEqual(application["bypass_actors"], founder_bypass)
         self.assertEqual(
             application["rules"]["pull_request"]["required_approving_review_count"],
             2,
@@ -94,6 +111,10 @@ class RulesetPlanTest(unittest.TestCase):
                     "triggers": ["pull_request", "merge_group"],
                 }
             ],
+        )
+        self.assertEqual(
+            catalog["rulesets"]["governance-source"]["repositories"],
+            [".github", "estate-ci", "github-config"],
         )
 
     def test_repository_ruleset_references_resolve(self):

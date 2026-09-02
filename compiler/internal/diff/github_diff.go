@@ -37,6 +37,10 @@ const (
 var (
 	organizationPattern         = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
 	driftCredentialFieldPattern = regexp.MustCompile(`(?i)(^|_)(access[_-]?token|authorization|client[_-]?secret|credential|password|private[_-]?key|secret|token)($|_)`)
+	commitSHA40Pattern          = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	founderBypassCommentPattern = regexp.MustCompile(
+		`^<!-- founder-pr-bypass:v1 -->\nhead-sha: ([0-9a-f]{40})\nreason: (\S(?:.{0,498}\S)?)$`,
+	)
 )
 
 var volatileKeys = map[string]struct{}{
@@ -512,6 +516,25 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		recordCapabilityError("organization_fork_pull_request_approval", err)
 		forkApprovalRaw = map[string]any{"status": "unknown"}
 	}
+	secretMetadataComplete := true
+	organizationSecrets, organizationSecretTotal, secretErr := client.getNestedListWithTotal(
+		ctx, "/orgs/"+escapedOrg+"/actions/secrets", "secrets", "total_count",
+	)
+	if secretErr != nil {
+		secretMetadataComplete = false
+		recordCapabilityError("organization_secret_metadata", secretErr)
+	}
+	organizationSecretInventory := metadataInventory(
+		"organization-secret", organizationSecrets, organizationSecretTotal,
+	)
+	if secretErr == nil && textValue(organizationSecretInventory["status"]) != "healthy" {
+		secretMetadataComplete = false
+		recordCapabilityError("organization_secret_metadata", errors.New("metadata identifiers are incomplete"))
+	}
+	secretMetadata := map[string]any{
+		"organization": organizationSecretInventory,
+		"repositories": map[string]any{},
+	}
 	oidcRaw, err := client.getObject(ctx, "/orgs/"+escapedOrg+"/actions/oidc/customization/sub")
 	if err != nil {
 		recordCapabilityError("oidc_subject_customization", err)
@@ -606,6 +629,7 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 	repositoryCustomProperties := make(map[string]any, len(repositoryNames))
 	repositoryActionsAccess := make(map[string]any, len(repositoryNames))
 	repositoryOIDCPolicies := make(map[string]any, len(repositoryNames))
+	repositoryRulesets := make(map[string]any, len(repositoryNames))
 	liveRepositoryNames := make(map[string]struct{}, len(repositoriesRaw))
 	liveRepositories := make(map[string]map[string]any, len(repositoriesRaw))
 	for _, repository := range objectArrayFromList(repositoriesRaw) {
@@ -620,6 +644,50 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 			continue
 		}
 		repositoryPath := "/repos/" + escapedOrg + "/" + url.PathEscape(repository)
+		repositorySecretValues, repositorySecretTotal, repositorySecretErr := client.getNestedListWithTotal(
+			ctx, repositoryPath+"/actions/secrets", "secrets", "total_count",
+		)
+		if repositorySecretErr != nil {
+			secretMetadataComplete = false
+			recordCapabilityError("repository_secret_metadata:"+repository, repositorySecretErr)
+		}
+		repositorySecretInventory := metadataInventory(
+			"repository-secret:"+repository, repositorySecretValues, repositorySecretTotal,
+		)
+		if repositorySecretErr == nil && textValue(repositorySecretInventory["status"]) != "healthy" {
+			secretMetadataComplete = false
+			recordCapabilityError("repository_secret_metadata:"+repository, errors.New("metadata identifiers are incomplete"))
+		}
+		secretMetadata["repositories"].(map[string]any)[repository] = repositorySecretInventory
+		repositoryRulesetList, repositoryRulesetErr := client.getList(
+			ctx, repositoryPath+"/rulesets?includes_parents=false",
+		)
+		if repositoryRulesetErr != nil {
+			recordCapabilityError("repository_rulesets:"+repository, repositoryRulesetErr)
+			repositoryRulesets[repository] = unknownValue()
+		} else {
+			repositoryRuleDetails := make([]any, 0, len(repositoryRulesetList))
+			for _, rawRuleset := range objectArrayFromList(repositoryRulesetList) {
+				identifier := fmt.Sprint(rawRuleset["id"])
+				if identifier == "" || identifier == "<nil>" {
+					recordCapabilityError("repository_rulesets:"+repository, errors.New("response omitted ruleset id"))
+					continue
+				}
+				detail, detailErr := client.getObject(ctx, repositoryPath+"/rulesets/"+url.PathEscape(identifier))
+				if detailErr != nil {
+					recordCapabilityError("repository_ruleset:"+repository+":"+identifier, detailErr)
+					continue
+				}
+				repositoryRuleDetails = append(repositoryRuleDetails, detail)
+			}
+			indexed, indexErr := indexUniqueObjects(repositoryRuleDetails, "name", nil)
+			if indexErr != nil {
+				recordCapabilityError("repository_rulesets:"+repository, indexErr)
+				repositoryRulesets[repository] = unknownValue()
+			} else {
+				repositoryRulesets[repository] = indexed
+			}
+		}
 		liveRepository := liveRepositories[repository]
 		visibility := strings.ToLower(textValue(liveRepository["visibility"]))
 		isPublic := visibility == "public" || (visibility == "" && liveRepository["private"] == false)
@@ -764,6 +832,15 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 	}
 	plan, _ := organizationRaw["plan"].(map[string]any)
 	planName, _ := plan["name"].(string)
+	if secretMetadataComplete {
+		secretMetadata["status"] = "healthy"
+	} else {
+		secretMetadata["status"] = "degraded"
+	}
+	founderBypassAudit := observeFounderBypassAudit(ctx, client, escapedOrg, desired)
+	if founderBypassAudit["status"] == "degraded" {
+		recordCapabilityError("founder_pr_bypass_audit", errors.New("audit evidence is incomplete"))
+	}
 	result := map[string]any{
 		"api_version":                    validation.APIVersion,
 		"kind":                           "GitHubObservedState",
@@ -791,7 +868,10 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		"organization_admins":      reduceArray(adminsRaw, []string{"login", "type", "site_admin"}),
 		"outside_collaborators":    reduceArray(outsideRaw, []string{"login", "type"}),
 		"teams":                    teams, "repositories": repositories, "rulesets": rulesets,
-		"environments": environments, "integrations": integrations,
+		"repository_rulesets": repositoryRulesets,
+		"environments":        environments, "integrations": integrations,
+		"actions_sensitive_inventory":            secretMetadata,
+		"founder_pr_bypass_audit":                founderBypassAudit,
 		"team_members":                           teamMembers,
 		"repository_team_grants":                 repositoryTeams,
 		"repository_direct_collaborators":        directCollaborators,
@@ -823,6 +903,7 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 			repositoryCustomProperties:    repositoryCustomProperties,
 			repositoryActionsAccess:       repositoryActionsAccess,
 			repositoryOIDCPolicies:        repositoryOIDCPolicies,
+			repositoryRulesets:            repositoryRulesets,
 		},
 	)
 	result["managed_projection"] = managedProjection
@@ -904,6 +985,7 @@ type observationDetails struct {
 	repositoryCustomProperties    map[string]any
 	repositoryActionsAccess       map[string]any
 	repositoryOIDCPolicies        map[string]any
+	repositoryRulesets            map[string]any
 }
 
 func (client *githubClient) getObject(ctx context.Context, path string) (map[string]any, error) {
@@ -1542,14 +1624,58 @@ func observedManagedProjection(
 	desiredRulesets, _ := desired["rulesets"].(map[string]any)
 	desiredTeamsForActors, _ := desired["teams"].(map[string]any)
 	desiredIntegrationsForActors, _ := desired["integrations"].(map[string]any)
-	actorNames := rulesetActorNames(desiredTeamsForActors, desiredIntegrationsForActors, teams)
+	actorNames := rulesetActorNames(
+		desiredTeamsForActors, desiredIntegrationsForActors, desiredRepositories,
+		teams, repositories,
+	)
 	observedRulesets := make(map[string]any, len(desiredRulesets))
 	consumedRulesets := make(map[string]struct{}, len(desiredRulesets))
+	consumedRepositoryRulesets := make(map[string]map[string]struct{})
 	for id, desiredRaw := range desiredRulesets {
 		desiredSpec, _ := desiredRaw.(map[string]any)
 		logicalName := id
 		if configuredName, _ := desiredSpec["name"].(string); configuredName != "" {
 			logicalName = configuredName
+		}
+		desiredRules, _ := desiredSpec["rules"].(map[string]any)
+		if desiredSpec["target"] == "branch" {
+			integrity, integrityExists := rulesets[logicalName+"-integrity"].(map[string]any)
+			prGovernance, prExists := rulesets[logicalName+"-pr-governance"].(map[string]any)
+			requiredWorkflow, requiredExists := rulesets[logicalName+"-required-workflow"].(map[string]any)
+			if !integrityExists || !prExists || !requiredExists {
+				if !details.rulesetsKnown {
+					observedRulesets[id] = unknownValue()
+				}
+				continue
+			}
+			for _, suffix := range []string{"-integrity", "-pr-governance", "-required-workflow"} {
+				consumedRulesets[logicalName+suffix] = struct{}{}
+			}
+			queues := make(map[string]map[string]any)
+			desiredRepositories, _ := desired["repositories"].(map[string]any)
+			for _, reference := range stringValues(desiredSpec["repositories"]) {
+				repositoryName := reference
+				if rawRepository, exists := desiredRepositories[reference]; exists {
+					repository, _ := rawRepository.(map[string]any)
+					if configured, _ := repository["name"].(string); configured != "" {
+						repositoryName = configured
+					}
+				}
+				repositoryRules, _ := details.repositoryRulesets[repositoryName].(map[string]any)
+				queue, _ := repositoryRules[logicalName+"-merge-queue"].(map[string]any)
+				if queue != nil {
+					queues[repositoryName] = queue
+					if consumedRepositoryRulesets[repositoryName] == nil {
+						consumedRepositoryRulesets[repositoryName] = make(map[string]struct{})
+					}
+					consumedRepositoryRulesets[repositoryName][logicalName+"-merge-queue"] = struct{}{}
+				}
+			}
+			observedRulesets[id] = projectObservedSplitBranchRuleset(
+				integrity, prGovernance, requiredWorkflow, queues,
+				projectDesiredRuleset(desiredSpec), actorNames,
+			)
+			continue
 		}
 		rawRuleset, exists := rulesets[logicalName]
 		ruleset, _ := rawRuleset.(map[string]any)
@@ -1560,7 +1686,6 @@ func observedManagedProjection(
 			continue
 		}
 		consumedRulesets[logicalName] = struct{}{}
-		desiredRules, _ := desiredSpec["rules"].(map[string]any)
 		creationRestricted, _ := desiredRules["creation_restricted"].(bool)
 		if desiredSpec["target"] == "tag" && creationRestricted {
 			creatorGate, _ := rulesets[logicalName+"-creator-gate"].(map[string]any)
@@ -1581,6 +1706,19 @@ func observedManagedProjection(
 			}
 			ruleset, _ := rawRuleset.(map[string]any)
 			observedRulesets[liveName] = projectObservedRulesetRaw(ruleset, actorNames)
+		}
+	}
+	for repository, rawRulesets := range details.repositoryRulesets {
+		if isUnknown(rawRulesets) {
+			continue
+		}
+		repositoryRulesets, _ := rawRulesets.(map[string]any)
+		for name, rawRuleset := range repositoryRulesets {
+			if _, consumed := consumedRepositoryRulesets[repository][name]; consumed {
+				continue
+			}
+			ruleset, _ := rawRuleset.(map[string]any)
+			observedRulesets["repository:"+repository+":"+name] = projectObservedRulesetRaw(ruleset, actorNames)
 		}
 	}
 	result["rulesets"] = observedRulesets
@@ -2010,6 +2148,23 @@ func projectObservedRulesetRaw(ruleset map[string]any, actorNames map[string]str
 			setObserved(requiredStatusChecks, "strict", parameters, "strict_required_status_checks_policy")
 			setObserved(requiredStatusChecks, "do_not_enforce_on_create", parameters, "do_not_enforce_on_create")
 			projectedRules["required_status_checks"] = requiredStatusChecks
+		case "workflows":
+			workflows := objectArray(parameters["workflows"])
+			if len(workflows) != 1 {
+				projectedRules["required_workflow"] = map[string]any{"status": "unexpected_workflow_count"}
+				break
+			}
+			workflow := workflows[0]
+			repositoryID := fmt.Sprint(workflow["repository_id"])
+			repository := actorNames["repository:"+repositoryID]
+			if repository == "" {
+				repository = "unresolved-repository-" + repositoryID
+			}
+			projectedRules["required_workflow"] = map[string]any{
+				"repository": repository,
+				"path":       workflow["path"],
+				"ref":        workflow["ref"],
+			}
 		}
 	}
 	sort.Strings(observedRuleTypes)
@@ -2063,6 +2218,111 @@ func projectObservedSplitTagRuleset(
 	return alignShape(desiredShape, result).(map[string]any)
 }
 
+func projectObservedSplitBranchRuleset(
+	integrity, prGovernance, requiredWorkflow map[string]any,
+	queues map[string]map[string]any,
+	desiredShape map[string]any,
+	actorNames map[string]string,
+) map[string]any {
+	result := projectObservedRulesetRaw(integrity, actorNames)
+	pr := projectObservedRulesetRaw(prGovernance, actorNames)
+	required := projectObservedRulesetRaw(requiredWorkflow, actorNames)
+	for _, field := range []string{"target", "enforcement", "repositories", "include_refs", "exclude_refs", "conditions"} {
+		baseline, _ := rendering.CanonicalJSON(result[field])
+		for _, candidate := range []map[string]any{pr, required} {
+			value, _ := rendering.CanonicalJSON(candidate[field])
+			if !bytes.Equal(baseline, value) {
+				result[field] = map[string]any{
+					"status": "physical_ruleset_mismatch", "integrity": result[field],
+					"pr_governance": pr[field], "required_workflow": required[field],
+				}
+				break
+			}
+		}
+	}
+	result["bypass_actors"] = pr["bypass_actors"]
+	rules, _ := result["rules"].(map[string]any)
+	prRules, _ := pr["rules"].(map[string]any)
+	requiredRules, _ := required["rules"].(map[string]any)
+	if pullRequest, exists := prRules["pull_request"]; exists {
+		rules["pull_request"] = pullRequest
+	}
+	if checks, exists := requiredRules["required_status_checks"]; exists {
+		rules["required_status_checks"] = checks
+	}
+	if workflow, exists := requiredRules["required_workflow"]; exists {
+		rules["required_workflow"] = workflow
+	}
+	mergeQueue := len(queues) > 0
+	expectedRepositories := stringValues(desiredShape["repositories"])
+	if len(queues) != len(expectedRepositories) {
+		mergeQueue = false
+	}
+	for _, queue := range queues {
+		if !repositoryMergeQueueMatches(queue, desiredShape, textValue(result["enforcement"])) {
+			mergeQueue = false
+		}
+	}
+	rules["merge_queue"] = mergeQueue
+	result["rules"] = rules
+	combinedRuleTypes := make(map[string]struct{})
+	for _, source := range []any{result["rule_types"], pr["rule_types"], required["rule_types"]} {
+		for _, ruleType := range stringValues(source) {
+			combinedRuleTypes[ruleType] = struct{}{}
+		}
+	}
+	if mergeQueue {
+		combinedRuleTypes["merge_queue"] = struct{}{}
+	}
+	types := make([]string, 0, len(combinedRuleTypes))
+	for ruleType := range combinedRuleTypes {
+		types = append(types, ruleType)
+	}
+	sort.Strings(types)
+	result["rule_types"] = stringsAsAny(types)
+	return alignShape(desiredShape, result).(map[string]any)
+}
+
+func repositoryMergeQueueMatches(ruleset, desiredShape map[string]any, organizationEnforcement string) bool {
+	if textValue(ruleset["target"]) != "branch" || len(objectArray(ruleset["bypass_actors"])) != 0 {
+		return false
+	}
+	expectedEnforcement := "disabled"
+	if organizationEnforcement == "active" {
+		expectedEnforcement = "active"
+	}
+	if textValue(ruleset["enforcement"]) != expectedEnforcement {
+		return false
+	}
+	conditions, _ := ruleset["conditions"].(map[string]any)
+	refName, _ := conditions["ref_name"].(map[string]any)
+	if !canonicalNormalizedEqual(refName["include"], desiredShape["include_refs"]) ||
+		!canonicalNormalizedEqual(refName["exclude"], desiredShape["exclude_refs"]) {
+		return false
+	}
+	rules := objectArray(ruleset["rules"])
+	if len(rules) != 1 || textValue(rules[0]["type"]) != "merge_queue" {
+		return false
+	}
+	parameters, _ := rules[0]["parameters"].(map[string]any)
+	expected := map[string]any{
+		"check_response_timeout_minutes": 30, "grouping_strategy": "ALLGREEN",
+		"max_entries_to_build": 2, "max_entries_to_merge": 1, "merge_method": "SQUASH",
+		"min_entries_to_merge": 1, "min_entries_to_merge_wait_minutes": 0,
+	}
+	projected := pick(parameters, []string{
+		"check_response_timeout_minutes", "grouping_strategy", "max_entries_to_build",
+		"max_entries_to_merge", "merge_method", "min_entries_to_merge", "min_entries_to_merge_wait_minutes",
+	})
+	return len(projected) == len(expected) && canonicalNormalizedEqual(projected, expected)
+}
+
+func canonicalNormalizedEqual(left, right any) bool {
+	leftJSON, leftErr := rendering.CanonicalJSON(normalize(left))
+	rightJSON, rightErr := rendering.CanonicalJSON(normalize(right))
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
 func projectObservedBypassActors(value any, actorNames map[string]string) []any {
 	result := make([]any, 0)
 	for _, actor := range objectArray(value) {
@@ -2096,7 +2356,8 @@ func authorizedCreatorIntegrations(value any, actorNames map[string]string) []an
 }
 
 func rulesetActorNames(
-	desiredTeams, desiredIntegrations, observedTeams map[string]any,
+	desiredTeams, desiredIntegrations, desiredRepositories,
+	observedTeams, observedRepositories map[string]any,
 ) map[string]string {
 	result := make(map[string]string)
 	for id, rawSpec := range desiredTeams {
@@ -2115,6 +2376,14 @@ func rulesetActorNames(
 		spec, _ := rawSpec.(map[string]any)
 		if actorID := fmt.Sprint(spec["actor_id"]); actorID != "" && actorID != "<nil>" {
 			result["integration:"+actorID] = id
+		}
+	}
+	for id, rawSpec := range desiredRepositories {
+		spec, _ := rawSpec.(map[string]any)
+		name, _ := spec["name"].(string)
+		repository, _ := observedRepositories[name].(map[string]any)
+		if repositoryID := fmt.Sprint(repository["id"]); repositoryID != "" && repositoryID != "<nil>" {
+			result["repository:"+repositoryID] = id
 		}
 	}
 	return result
@@ -2275,6 +2544,9 @@ func projectDesiredRuleset(spec map[string]any) map[string]any {
 	if _, exists := rules["required_status_checks"].(map[string]any); exists {
 		ruleTypes = append(ruleTypes, "required_status_checks")
 	}
+	if _, exists := rules["required_workflow"].(map[string]any); exists {
+		ruleTypes = append(ruleTypes, "workflows")
+	}
 	sort.Strings(ruleTypes)
 	result["rule_types"] = stringsAsAny(ruleTypes)
 	projectedRules := pick(rules, []string{
@@ -2301,6 +2573,9 @@ func projectDesiredRuleset(spec map[string]any) map[string]any {
 		projectedRules["required_status_checks"] = map[string]any{
 			"strict": requiredChecks["strict"], "do_not_enforce_on_create": false, "checks": checks,
 		}
+	}
+	if requiredWorkflow, ok := rules["required_workflow"].(map[string]any); ok {
+		projectedRules["required_workflow"] = pick(requiredWorkflow, []string{"repository", "path", "ref"})
 	}
 	result["rules"] = projectedRules
 	return result
@@ -2348,6 +2623,130 @@ func stringsAsAny(values []string) []any {
 		result[index] = value
 	}
 	return result
+}
+
+func metadataInventory(domain string, values []any, total int64) map[string]any {
+	if total < 0 {
+		return map[string]any{"status": "unknown", "identifier_digests": []any{}}
+	}
+	digests := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range objectArrayFromList(values) {
+		name, _ := raw["name"].(string)
+		if name == "" {
+			return map[string]any{"status": "unknown", "identifier_digests": []any{}}
+		}
+		canonicalName := strings.ToLower(name)
+		if _, duplicate := seen[canonicalName]; duplicate {
+			return map[string]any{"status": "unknown", "identifier_digests": []any{}}
+		}
+		seen[canonicalName] = struct{}{}
+		digests = append(digests, rendering.Digest([]byte(domain+"\x00"+name)))
+	}
+	if int64(len(digests)) != total {
+		return map[string]any{"status": "unknown", "identifier_digests": []any{}}
+	}
+	sort.Strings(digests)
+	return map[string]any{
+		"status": "healthy", "count": total, "identifier_digests": stringsAsAny(digests),
+	}
+}
+
+func observeFounderBypassAudit(
+	ctx context.Context, client *githubClient, escapedOrg string, desired map[string]any,
+) map[string]any {
+	organization, _ := desired["organization"].(map[string]any)
+	policy, _ := organization["founder_pull_request_bypass"].(map[string]any)
+	if policy == nil {
+		return map[string]any{"status": "healthy", "checked_pull_requests": int64(0), "violations": []any{}}
+	}
+	accounts := make(map[string]struct{})
+	for _, account := range stringValues(policy["github_actor_accounts"]) {
+		accounts[strings.ToLower(account)] = struct{}{}
+	}
+	query := url.QueryEscape("org:" + strings.TrimSpace(escapedOrg) + " is:pr is:open label:founder-bypass")
+	issues, _, err := client.getNestedListWithTotal(ctx, "/search/issues?q="+query, "items", "total_count")
+	if err != nil {
+		return map[string]any{"status": "degraded", "checked_pull_requests": int64(0), "violations": []any{}}
+	}
+	desiredRepositories, _ := desired["repositories"].(map[string]any)
+	allowedRepositories := make(map[string]struct{}, len(desiredRepositories))
+	for id, raw := range desiredRepositories {
+		repository, _ := raw.(map[string]any)
+		name, _ := repository["name"].(string)
+		if name == "" {
+			name = id
+		}
+		allowedRepositories[name] = struct{}{}
+	}
+	violations := make([]any, 0)
+	checked := int64(0)
+	for _, raw := range objectArrayFromList(issues) {
+		repositoryURL, _ := raw["repository_url"].(string)
+		parsed, parseErr := url.Parse(repositoryURL)
+		if parseErr != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Host, "api.github.com") {
+			violations = append(violations, map[string]any{"code": "REPOSITORY_BINDING_INVALID"})
+			continue
+		}
+		parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+		if len(parts) != 3 || parts[0] != "repos" || !strings.EqualFold(parts[1], strings.TrimSpace(escapedOrg)) {
+			violations = append(violations, map[string]any{"code": "REPOSITORY_BINDING_INVALID"})
+			continue
+		}
+		repository := parts[2]
+		if _, allowed := allowedRepositories[repository]; !allowed {
+			violations = append(violations, map[string]any{"repository": repository, "code": "REPOSITORY_NOT_MANAGED"})
+			continue
+		}
+		number := integerJSONValue(raw["number"])
+		if number <= 0 {
+			violations = append(violations, map[string]any{"repository": repository, "code": "PULL_REQUEST_NUMBER_INVALID"})
+			continue
+		}
+		checked++
+		path := "/repos/" + url.PathEscape(strings.TrimSpace(escapedOrg)) + "/" + url.PathEscape(repository)
+		pull, pullErr := client.getObject(ctx, path+"/pulls/"+strconv.FormatInt(number, 10))
+		comments, commentsErr := client.getList(ctx, path+"/issues/"+strconv.FormatInt(number, 10)+"/comments")
+		if pullErr != nil || commentsErr != nil {
+			return map[string]any{"status": "degraded", "checked_pull_requests": checked, "violations": violations}
+		}
+		head, _ := pull["head"].(map[string]any)
+		headSHA, _ := head["sha"].(string)
+		valid := false
+		for _, rawComment := range objectArrayFromList(comments) {
+			commentUser, _ := rawComment["user"].(map[string]any)
+			login, _ := commentUser["login"].(string)
+			if _, allowed := accounts[strings.ToLower(login)]; !allowed {
+				continue
+			}
+			body, _ := rawComment["body"].(string)
+			if validFounderBypassComment(body, headSHA) {
+				valid = true
+				break
+			}
+		}
+		if !valid {
+			violations = append(violations, map[string]any{
+				"repository": repository, "pull_request_number": number,
+				"head_sha_digest": rendering.Digest([]byte("founder-pr-bypass-head\x00" + headSHA)),
+				"code":            "CURRENT_HEAD_EVIDENCE_MISSING",
+			})
+		}
+	}
+	status := "healthy"
+	if len(violations) > 0 {
+		status = "drift"
+	}
+	return map[string]any{"status": status, "checked_pull_requests": checked, "violations": violations}
+}
+
+func validFounderBypassComment(body, headSHA string) bool {
+	if !commitSHA40Pattern.MatchString(headSHA) {
+		return false
+	}
+	normalized := strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n"))
+	match := founderBypassCommentPattern.FindStringSubmatch(normalized)
+	return len(match) == 3 && match[1] == headSHA
 }
 
 func textValue(value any) string {

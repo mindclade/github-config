@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.mindclade.io/schemas/v1/founder_pr_bypass_evidence.schema.json",
+  "title": "Founder pull request bypass evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "api_version",
+    "kind",
+    "contract",
+    "repository",
+    "pull_request_number",
+    "head_sha",
+    "label",
+    "comment",
+    "actor",
+    "principal_id",
+    "reason",
+    "evidence_digest"
+  ],
+  "properties": {
+    "api_version": { "const": "github.mindclade.io/v1" },
+    "kind": { "const": "FounderPullRequestBypassEvidence" },
+    "contract": { "const": "founder-pr-bypass.v1" },
+    "repository": { "type": "string", "pattern": "^mindclade/[A-Za-z0-9_.-]{1,100}$" },
+    "pull_request_number": { "type": "integer", "minimum": 1 },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "label": { "const": "founder-bypass" },
+    "comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["marker", "head_sha"],
+      "properties": {
+        "marker": { "const": "<!-- founder-pr-bypass:v1 -->" },
+        "head_sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+      }
+    },
+    "actor": { "enum": ["mindclade-founder", "robpearc"] },
+    "principal_id": { "const": "founder-primary" },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "evidence_digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

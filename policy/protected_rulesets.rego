@@ -15,8 +15,28 @@ deny contains sprintf("ruleset %q is not active", [ruleset.metadata.id]) if {
 	ruleset.spec.enforcement != "active"
 }
 
-deny contains sprintf("ruleset %q defines bypass actors", [ruleset.metadata.id]) if {
+founder_pr_bypass(actor) if {
+	actor.actor_type == "team"
+	actor.actor == "founder-pr-bypass"
+	actor.mode == "pull_request"
+}
+
+deny contains sprintf("branch ruleset %q omits the evidence-gated founder PR entitlement", [ruleset.metadata.id]) if {
 	some ruleset in input.rulesets
+	ruleset.spec.target == "branch"
+	count(ruleset.spec.bypass_actors) != 1
+}
+
+deny contains sprintf("branch ruleset %q defines a noncanonical bypass actor", [ruleset.metadata.id]) if {
+	some ruleset in input.rulesets
+	ruleset.spec.target == "branch"
+	some actor in ruleset.spec.bypass_actors
+	not founder_pr_bypass(actor)
+}
+
+deny contains sprintf("non-branch ruleset %q defines bypass actors", [ruleset.metadata.id]) if {
+	some ruleset in input.rulesets
+	ruleset.spec.target != "branch"
 	count(ruleset.spec.bypass_actors) > 0
 }
 
@@ -48,6 +68,25 @@ deny contains sprintf("branch ruleset %q lacks merge queue protection", [ruleset
 	some ruleset in input.rulesets
 	ruleset.spec.target == "branch"
 	not ruleset.spec.rules.merge_queue
+}
+
+deny contains sprintf("branch ruleset %q lacks the protected organization workflow", [ruleset.metadata.id]) if {
+	some ruleset in input.rulesets
+	ruleset.spec.target == "branch"
+	ruleset.spec.rules.required_workflow.repository != "dot-github"
+}
+
+deny contains sprintf("branch ruleset %q uses a noncanonical required workflow", [ruleset.metadata.id]) if {
+	some ruleset in input.rulesets
+	ruleset.spec.target == "branch"
+	workflow := ruleset.spec.rules.required_workflow
+	workflow.path != ".github/workflows/pull-request.yml"
+}
+
+deny contains sprintf("branch ruleset %q does not bind the protected main workflow", [ruleset.metadata.id]) if {
+	some ruleset in input.rulesets
+	ruleset.spec.target == "branch"
+	ruleset.spec.rules.required_workflow.ref != "refs/heads/main"
 }
 
 deny contains sprintf("branch ruleset %q requires fewer than two approvals", [ruleset.metadata.id]) if {

@@ -94,6 +94,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             root = directory / "repository"
             shutil.copytree(ROOT / "config", root / "config")
             shutil.copytree(ROOT / "schemas", root / "schemas")
+            shutil.copytree(ROOT / "generated", root / "generated")
             shutil.copytree(ROOT / ".github", root / ".github")
             shutil.copy2(ROOT / "component.yaml", root / "component.yaml")
             first = directory / "first.json"
@@ -1673,6 +1674,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             authorization_root = directory / "authorization-root"
             shutil.copytree(ROOT / "config", authorization_root / "config")
             shutil.copytree(ROOT / "schemas", authorization_root / "schemas")
+            shutil.copytree(ROOT / "generated", authorization_root / "generated")
             shutil.copytree(ROOT / ".github", authorization_root / ".github")
             shutil.copy2(ROOT / "component.yaml", authorization_root / "component.yaml")
             outside_source = authorization_root / "config" / "outside-collaborators.yaml"
@@ -1951,6 +1953,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             revocation_root = directory / "revocation-root"
             shutil.copytree(ROOT / "config", revocation_root / "config")
             shutil.copytree(ROOT / "schemas", revocation_root / "schemas")
+            shutil.copytree(ROOT / "generated", revocation_root / "generated")
             shutil.copytree(ROOT / ".github", revocation_root / ".github")
             shutil.copy2(ROOT / "component.yaml", revocation_root / "component.yaml")
             architecture = revocation_root / "config" / "teams" / "architecture.yaml"
@@ -2109,6 +2112,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             retirement_root = directory / "retirement-root"
             shutil.copytree(ROOT / "config", retirement_root / "config")
             shutil.copytree(ROOT / "schemas", retirement_root / "schemas")
+            shutil.copytree(ROOT / "generated", retirement_root / "generated")
             shutil.copytree(ROOT / ".github", retirement_root / ".github")
             shutil.copy2(ROOT / "component.yaml", retirement_root / "component.yaml")
             organization_source = retirement_root / "config" / "organization.yaml"
@@ -2217,6 +2221,7 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
             qualified_root = directory / "qualified-root"
             shutil.copytree(ROOT / "config", qualified_root / "config")
             shutil.copytree(ROOT / "schemas", qualified_root / "schemas")
+            shutil.copytree(ROOT / "generated", qualified_root / "generated")
             shutil.copytree(ROOT / ".github", qualified_root / ".github")
             shutil.copy2(ROOT / "component.yaml", qualified_root / "component.yaml")
             environment_path = (

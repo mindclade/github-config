@@ -21,20 +21,27 @@ provider/external controls. Clearing repository variables is not activation;
 approved source-contract changes and fresh connected evidence are both
 required before the enforce graph can become reachable.
 
-The declared estate profile is `github-free-public`: all six managed
-repositories are public and carry the `public` data-classification property.
-Every desired repository also carries `production_authority: none` until
-independent connected qualification replaces source bootstrap authority.
-Normal governance still requires two independent human principals. The exact,
-unexpired `FBE-0001` exception may use the two declared GitHub actor accounts
-mapped to `founder-primary` only for foundation bootstrap. It explicitly does
-not establish independence or production authority.
+The declared estate profile is `github-enterprise-cloud-mixed`. It requires
+GitHub Enterprise Cloud and GitHub Advanced Security capabilities. The
+seven-repository inventory records `.github`, `mindclade`, and prospective
+`estate-ci` as internal; bootstrap, github-config, gitops, and
+infrastructure-live remain private. Every desired repository carries
+`production_authority: none` until independent connected qualification replaces
+source bootstrap authority. Normal governance still requires two independent
+human principals. The exact, unexpired `FBE-0001` exception may use the two
+declared GitHub actor accounts mapped to `founder-primary` only for foundation
+bootstrap. It explicitly does not establish independence or production
+authority.
 
-The repository-local `flake.nix` and `flake.lock` are the sole system-toolchain
-authority for supported `aarch64-darwin` and `x86_64-linux` hosts. The flake
-exposes the reviewed toolchain package, identical default/CI shell closures,
-formatter, and toolchain/source checks while preserving Go modules, OpenTofu
-provider locks, and Bazel as their native dependency authorities:
+The repository-local `flake.nix` and `flake.lock` remain the consumer
+system-toolchain lock for supported `aarch64-darwin` and `x86_64-linux` hosts.
+They import the four checked-in estate defaults under `generated/`, bound to
+the exact `mindclade/.github` authority revision
+`49a015c2c0cdd6a75a5756eb8c1e95b49d117917`; validation rejects any byte drift
+and performs no mutable remote policy fetch. The flake exposes the reviewed
+toolchain package, identical default/CI shell closures, formatter, and
+toolchain/source checks while preserving Go modules, OpenTofu provider locks,
+and Bazel as their native dependency authorities:
 
 ```bash
 nix build --no-accept-flake-config --no-update-lock-file .#toolchain
@@ -57,8 +64,10 @@ connected drift evidence. It does not own:
 - the GCS state backend, KMS policy, WIF providers, or App-key custody
   (`mindclade/bootstrap`);
 - cloud infrastructure (`mindclade/infrastructure-live`);
-- Kubernetes desired state (`mindclade/gitops`); or
-- product source and build artifacts (`mindclade/mindclade`).
+- Kubernetes desired state (`mindclade/gitops`);
+- product source and build artifacts (`mindclade/mindclade`); or
+- the estate health and controlled CI operations service
+  (`mindclade/estate-ci`).
 
 Normal dependency direction is `.github` and bootstrap outputs into this
 repository. No workflow here mutates cloud infrastructure or runtime state.
@@ -79,12 +88,11 @@ fields, and refers to other objects by stable logical ID. Generated catalog,
 observation, plan, state, and evidence files are ephemeral and must not be
 committed.
 
-Every repository declares an Actions access level; `.github` retains the
-catalog's `organization` reusable-workflow authority and the other repositories
-declare `none`. GitHub's repository access-level control is inapplicable to
-public repositories, so the provider resource, import binding, observation,
-and drift projection omit it for this public estate rather than pretending a
-private-repository sharing boundary exists.
+Every repository declares an Actions access level; internal `.github` retains
+the catalog's `organization` reusable-workflow authority and the other private
+or internal repositories declare `none`. The provider, adoption, observation,
+and drift surfaces therefore manage this access boundary explicitly for every
+repository.
 The visible `developer-platform` and `security` teams retain `maintain` and
 `push` access respectively so both `.github/CODEOWNERS` entries can resolve
 once connected team membership is qualified.
@@ -96,12 +104,29 @@ observation proves the assignments converged may a later change select
 `retire`, remove the legacy-value map, and contract the definitions. No
 workflow performs an ad-hoc REST write or infers retirement from source alone.
 
-Infrastructure source review is enforced by the canonical no-bypass
-`infrastructure-source` ruleset, two distinct approvals, required CODEOWNER
-review, signed commits, merge queue, and the exact `Pull request / required`
-workflow provenance. Protected mutations use the canonical
+Each branch policy is materialized as three organization rulesets: a no-bypass
+integrity layer, a pull-request-governance layer, and a no-bypass required
+workflow/status layer. A separate no-bypass repository ruleset owns merge
+queue behavior. Only the pull-request-governance layer may contain the
+`founder-pr-bypass` team with `bypass_mode=pull_request`; integrity, required
+workflow, merge queue, and tag protections have no bypass. The stable branch
+contract remains the exact `Pull request / required` check plus the required
+`.github/.github/workflows/pull-request.yml@refs/heads/main` workflow.
+Protected mutations use the canonical
 `infrastructure-apply` environment, which prevents self-review and
 administrator bypass.
+
+The structurally durable `founder-pr-bypass.v1` entitlement covers all managed
+repositories and paths, permits self-authored pull requests, but grants neither
+foundation nor production authority. A bypassed pull request must carry the
+exact `founder-bypass` label and an exact three-line comment:
+`<!-- founder-pr-bypass:v1 -->`, `head-sha: <current SHA>`, then a nonempty
+`reason: <1-500 characters>`.
+The comment author must be one of the two accounts mapped to
+`founder-primary`; any new commit invalidates the evidence. The nonsecret
+consumer artifact is generated with `founder-bypass-policy`.
+Generation does not publish or activate that artifact; the `.github` profile
+authority must explicitly import it before treating it as enforcement input.
 
 The disaster-recovery workflow's optional connected archive verifier reuses
 that canonical `infrastructure-apply` environment. Its checked-in activation
@@ -119,6 +144,10 @@ github-configctl validate
 github-configctl compile --output catalog.json
 github-configctl observe --organization mindclade --output observed.json
 github-configctl diff --desired catalog.json --observed observed.json
+github-configctl doctor --observed observed.json --output doctor.json \
+  --markdown-output doctor.md --authority-root ../
+github-configctl workflow-contract --authority-root ../ --output workflow-contract.json
+github-configctl founder-bypass-policy --output founder-bypass-policy.json
 github-configctl preflight --desired catalog.json --observed observed.json
 github-configctl evidence --catalog catalog.json --plan plan.json \
   --observed observed.json --plan-file tfplan --source-sha "$GITHUB_SHA" \
@@ -138,6 +167,23 @@ reviewers, integrations, or observations are incomplete. A core observation
 is complete only when the unique repository enumeration equals GitHub's
 authoritative public-plus-private organization count; missing count fields or
 a downscoped partial inventory fail closed.
+`doctor` composes catalog validation, the live or supplied observation,
+workflow-contract validation, secret metadata inventory, ruleset and
+required-check drift, and founder evidence audit. It writes deterministic JSON
+and Markdown, returns `0` only when healthy, `2` for confirmed drift, and `1`
+when any capability or operation is incomplete; incomplete evidence takes
+precedence over drift. Secret values, variable values, bypass reasons, and
+comment bodies are never emitted. The nightly/manual drift workflow reconciles
+one marker-addressed issue: it creates or reopens and updates that issue on a
+failure and closes it on recovery.
+
+`workflow-contract` recursively resolves reviewed reusable-workflow calls and
+external actions. It rejects mutable action pins, nonexact reusable-workflow
+pins, undeclared inputs/secrets/outputs, `secrets: inherit`, cycles, insufficient
+caller/callee permissions, and missing semantic permissions such as
+`id-token`, `security-events`, `actions`, and `attestations`. The pre-push hook
+runs the local contract; CI supplies immutable authority checkouts and enables
+`--require-authorities`.
 Plan evidence exposes only resource types, action/risk classes, opaque
 deterministic change IDs, and safe changed-field paths. Nonsensitive
 before/after states use domain-, path-, side-, resource-, and action-bound
@@ -203,8 +249,8 @@ controlled phases:
    weakening, and repository deletion. Delete-only revocation of an
    organization membership, team membership, team repository grant, or
    direct repository collaborator remains narrowly governed. The catalog may
-   also retire an environment, environment deployment policy, organization
-   ruleset, or team only when the exact plan is explicitly acknowledged and
+   also retire an environment, environment deployment policy, organization or
+   repository ruleset, or team only when the exact plan is explicitly acknowledged and
    accompanied by complete plan-bound dependency analysis. Offboarding still
    requires fresh connected quorum proof; a simultaneous access grant,
    disguised replacement, unknown address, or repository removal remains
@@ -298,7 +344,7 @@ The backend digest is SHA-256 over repository-canonical JSON
 `{version:"gcs-backend/v1",bucket,prefix}`. Canonical bytes are UTF-8 with
 lexically sorted keys, two-space indentation, and one terminal LF. The executor
 digest uses the same encoding and version `github-config-executor/v1`, binding organization,
-the `sts.googleapis.com` audience, the sorted six-repository scope, and both
+the `sts.googleapis.com` audience, the sorted seven-repository scope, and both
 roles' App ID, installation ID, service account, and WIF provider. Before any
 privileged authentication, the plan and apply jobs recompute these contracts
 from their effective values and compare them with the source-gate outputs.

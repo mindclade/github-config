@@ -21,6 +21,10 @@ plan.json
 *-evidence.json
 *-receipt.json
 *-diagnostic.json
+doctor.json
+doctor.md
+workflow-contract.json
+founder-bypass-policy.json
 
 # Language and editor caches.
 __pycache__/

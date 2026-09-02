@@ -6,7 +6,7 @@ metadata:
 spec:
   name: github-config
   description: Declarative GitHub organization governance control plane.
-  visibility: public
+  visibility: private
   actions_access_level: none
   archived: false
   archive_on_destroy: true

@@ -792,8 +792,10 @@ jobs:
           permission-organization-custom-org-roles: read
           permission-organization-custom-properties: read
           permission-organization-plan: read
+          permission-organization-secrets: read
           permission-organization-self-hosted-runners: read
           permission-repository-custom-properties: read
+          permission-secrets: read
           permission-security-events: read
           permission-vulnerability-alerts: read
 
@@ -989,6 +991,8 @@ jobs:
                 adopted_repository_custom_properties: ($preflight[0].adopted_repository_custom_properties // {}),
                 adopted_repository_names: ($preflight[0].adopted_repository_names // {}),
                 adopted_repository_oidc_templates: ($preflight[0].adopted_repository_oidc_templates // {}),
+                adopted_repository_ruleset_ids: ($preflight[0].adopted_repository_ruleset_ids // {}),
+                adopted_repository_ruleset_enforcements: ($preflight[0].adopted_repository_ruleset_enforcements // {}),
                 adopted_ruleset_ids: ($preflight[0].adopted_ruleset_ids // {}),
                 adopted_ruleset_enforcements: ($preflight[0].adopted_ruleset_enforcements // {}),
                 adopted_security_manager_assignments: ($preflight[0].adopted_security_manager_assignments // {}),
@@ -1808,6 +1812,8 @@ jobs:
                 adopted_repository_custom_properties: ($preflight[0].adopted_repository_custom_properties // {}),
                 adopted_repository_names: ($preflight[0].adopted_repository_names // {}),
                 adopted_repository_oidc_templates: ($preflight[0].adopted_repository_oidc_templates // {}),
+                adopted_repository_ruleset_ids: ($preflight[0].adopted_repository_ruleset_ids // {}),
+                adopted_repository_ruleset_enforcements: ($preflight[0].adopted_repository_ruleset_enforcements // {}),
                 adopted_ruleset_ids: ($preflight[0].adopted_ruleset_ids // {}),
                 adopted_ruleset_enforcements: ($preflight[0].adopted_ruleset_enforcements // {}),
                 adopted_security_manager_assignments: ($preflight[0].adopted_security_manager_assignments // {}),

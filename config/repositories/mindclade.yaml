@@ -6,7 +6,7 @@ metadata:
 spec:
   name: mindclade
   description: Product source, contracts, immutable artifacts, and release packages.
-  visibility: public
+  visibility: internal
   actions_access_level: none
   archived: false
   archive_on_destroy: true

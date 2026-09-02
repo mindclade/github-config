@@ -3,14 +3,22 @@ output "ruleset_ids" {
   value       = { for key, ruleset in github_organization_ruleset.this : key => ruleset.ruleset_id }
 }
 
+output "repository_ruleset_ids" {
+  description = "Numeric repository merge-queue ruleset IDs keyed by physical identifier."
+  value       = { for key, ruleset in github_repository_ruleset.merge_queue : key => ruleset.ruleset_id }
+}
+
 output "effective_enforcement" {
-  description = "Effective ruleset mode after applying the protected rollout phase."
-  value       = { for key, ruleset in local.rulesets : key => ruleset.effective_enforcement }
+  description = "Effective organization and repository ruleset mode after the protected rollout phase."
+  value = merge(
+    { for key, ruleset in local.rulesets : key => ruleset.effective_enforcement },
+    { for key, ruleset in local.repository_merge_queue_rulesets : key => ruleset.enforcement },
+  )
 }
 
 output "physical_rulesets" {
   description = "Stable mapping from physical rulesets to logical catalog policy and security role."
-  value = {
+  value = merge({
     for key, ruleset in local.rulesets : key => {
       logical_key = ruleset.logical_key
       name        = ruleset.effective_name
@@ -24,23 +32,35 @@ output "physical_rulesets" {
       }
       bypass_actors = ruleset.resolved_bypass_actors
     }
-  }
+    }, {
+    for key, ruleset in local.repository_merge_queue_rulesets : key => {
+      logical_key = ruleset.logical_key
+      name        = ruleset.name
+      role        = ruleset.physical_role
+      enforcement = ruleset.enforcement
+      repository  = ruleset.repository
+      rules = {
+        merge_queue = true
+      }
+      bypass_actors = {}
+    }
+  })
 }
 
 output "deployment_preflight" {
   description = "Ruleset intentions that require external qualification or are unavailable in provider 6.13.0."
-  value = {
+  value = merge({
     for key, ruleset in local.rulesets : key => {
       merge_queue = {
-        managed             = false
-        desired             = ruleset.rules.merge_queue
-        enforcement_blocked = ruleset.rules.merge_queue
-        reason              = "provider 6.13.0 does not expose an organization-ruleset merge_queue block; active enforce is blocked while desired"
+        managed             = true
+        desired             = false
+        enforcement_blocked = false
+        reason              = "merge queue is isolated in a no-bypass repository ruleset"
       }
       distinct_principals = {
-        managed = false
+        managed = true
         desired = try(ruleset.rules.pull_request.require_distinct_principals, false)
-        reason  = "GitHub approval counts are account-based; principal alias independence is enforced by catalog policy and preflight"
+        reason  = "the no-bypass organization required workflow validates review identities against the principal mapping"
       }
       status_check_issuers = {
         managed = ruleset.rules.required_status_checks == null ? true : alltrue([
@@ -55,8 +75,8 @@ output "deployment_preflight" {
         reason = "numeric issuer App IDs are enforced when qualified; immutable workflow path and trigger provenance remain workflow-policy preflight evidence"
       }
       workflow_provenance = {
-        managed             = ruleset.rules.required_status_checks == null
-        enforcement_blocked = ruleset.rules.required_status_checks != null
+        managed             = ruleset.rules.required_status_checks == null || ruleset.rules.required_workflow != null
+        enforcement_blocked = ruleset.rules.required_status_checks != null && ruleset.rules.required_workflow == null
         desired = try([
           for check in ruleset.rules.required_status_checks.checks : {
             context       = check.context
@@ -64,7 +84,7 @@ output "deployment_preflight" {
             triggers      = check.triggers
           }
         ], [])
-        reason = "provider required_workflows needs a source repository ID and immutable ref; catalog workflow_path and trigger declarations are retained but enforcement stays blocked until a digest-bound binding exists"
+        reason = "provider 6.13.0 binds the protected organization workflow to the managed .github repository and main ref"
       }
       authorized_creator_integrations = {
         managed    = ruleset.physical_role != "creator_gate" || (length(ruleset.unresolved_integration_actors) == 0 && length(ruleset.original_bypass_actors) == 0)
@@ -84,12 +104,56 @@ output "deployment_preflight" {
         reason      = "creation authorization is isolated from deletion and non-fast-forward protection so creator Apps cannot move or delete immutable tags"
       }
     }
-  }
+    }, {
+    for key, ruleset in local.repository_merge_queue_rulesets : key => {
+      merge_queue = {
+        managed             = true
+        desired             = true
+        enforcement_blocked = false
+        reason              = "provider 6.13.0 materializes merge_queue on a repository ruleset"
+      }
+      distinct_principals = {
+        managed = true
+        desired = false
+        reason  = "not applicable to the isolated merge-queue resource"
+      }
+      status_check_issuers = {
+        managed   = true
+        desired   = []
+        actor_ids = {}
+        reason    = "the separate no-bypass required-workflow organization ruleset owns checks"
+      }
+      workflow_provenance = {
+        managed             = true
+        enforcement_blocked = false
+        desired             = []
+        reason              = "the separate no-bypass required-workflow organization ruleset owns provenance"
+      }
+      authorized_creator_integrations = {
+        managed    = true
+        desired    = []
+        actor_ids  = {}
+        unresolved = []
+        reason     = "not applicable to branch merge queues"
+      }
+      bypass_actors = {
+        managed_teams           = []
+        unresolved_integrations = []
+        reason                  = "repository merge-queue rulesets never carry bypass actors"
+      }
+      tag_rule_separation = {
+        logical_key = ruleset.logical_key
+        role        = ruleset.physical_role
+        reason      = "merge queue is isolated from the pull-request bypass entitlement"
+      }
+    }
+  })
 }
 
 output "managed_resource_ids" {
   description = "Non-sensitive ruleset resource identifiers for evidence."
   value = {
     organization = { for key, ruleset in github_organization_ruleset.this : key => ruleset.id }
+    repository   = { for key, ruleset in github_repository_ruleset.merge_queue : key => ruleset.id }
   }
 }

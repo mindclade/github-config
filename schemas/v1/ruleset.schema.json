@@ -80,6 +80,19 @@
         "checks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/statusCheck" } }
       }
     },
+    "requiredWorkflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "path", "ref"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,100}$" },
+        "path": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[A-Za-z0-9_.-]+\\.ya?ml$"
+        },
+        "ref": { "const": "refs/heads/main" }
+      }
+    },
     "branchRules": {
       "type": "object",
       "additionalProperties": false,
@@ -90,6 +103,7 @@
         "required_signatures",
         "merge_queue",
         "pull_request",
+        "required_workflow",
         "required_status_checks"
       ],
       "properties": {
@@ -99,6 +113,7 @@
         "required_signatures": { "type": "boolean" },
         "merge_queue": { "type": "boolean" },
         "pull_request": { "$ref": "#/$defs/pullRequest" },
+        "required_workflow": { "$ref": "#/$defs/requiredWorkflow" },
         "required_status_checks": { "$ref": "#/$defs/requiredStatusChecks" }
       }
     },

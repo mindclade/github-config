@@ -4,7 +4,7 @@ metadata:
   id: mindclade-organization
   owner_team: security
 spec:
-  estate_profile: github-free-public
+  estate_profile: github-enterprise-cloud-mixed
   founder_bootstrap_exception:
     id: FBE-0001
     state: UNUSED
@@ -31,6 +31,32 @@ spec:
     independent_principals: false
     production_authority: false
     expires_at: "2026-09-30T23:59:59Z"
+  founder_pull_request_bypass:
+    contract: founder-pr-bypass.v1
+    entitlement_id: founder-pr-bypass
+    team: founder-pr-bypass
+    principal_id: founder-primary
+    github_actor_accounts:
+      - mindclade-founder
+      - robpearc
+    durable: true
+    bypass_mode: pull_request
+    self_authored_pull_requests: true
+    all_repositories: true
+    all_paths: true
+    label: founder-bypass
+    comment_marker: "<!-- founder-pr-bypass:v1 -->"
+    head_sha_required: true
+    reason_required: true
+    author_must_map_to_principal: true
+    foundation_authority: false
+    production_authority: false
+    fbe_exception_id: FBE-0001
+    activation:
+      state: blocked
+      blockers:
+        - github-enterprise-cloud-not-qualified
+        - required-workflow-evidence-not-qualified
   organization_login: mindclade
   default_repository_permission: none
   members_can_create_repositories: false

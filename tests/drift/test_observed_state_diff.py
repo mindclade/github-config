@@ -73,6 +73,8 @@ class ObservedStateDiffTest(unittest.TestCase):
                 rule_types.append("pull_request")
             if "required_status_checks" in rules:
                 rule_types.append("required_status_checks")
+            if "required_workflow" in rules:
+                rule_types.append("workflows")
             projected["rule_types"] = sorted(rule_types)
             projected_rules = pick(
                 rules,
@@ -107,6 +109,10 @@ class ObservedStateDiffTest(unittest.TestCase):
                         pick(check, ["context", "integration_id"]) for check in required["checks"]
                     ],
                 }
+            if "required_workflow" in rules:
+                projected_rules["required_workflow"] = pick(
+                    rules["required_workflow"], ["repository", "path", "ref"]
+                )
             projected["rules"] = projected_rules
             return projected
 
@@ -314,7 +320,7 @@ class ObservedStateDiffTest(unittest.TestCase):
             self.assertIn("/repositories/github-config/actions_access_level", paths)
             self.assertIn("/organization/custom_properties", paths)
 
-    def test_public_repository_actions_access_projection_is_explicit_and_closed_world(self):
+    def test_mixed_repository_actions_access_projection_is_explicit_and_closed_world(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
             desired = directory / "desired.json"
@@ -326,22 +332,28 @@ class ObservedStateDiffTest(unittest.TestCase):
             repository_ids = {
                 "bootstrap",
                 "dot-github",
+                "estate-ci",
                 "github-config",
                 "gitops",
                 "infrastructure-live",
                 "mindclade",
             }
             self.assertEqual(set(projection["repositories"]), repository_ids)
-            public_semantics = {
-                "applicability": "not_applicable",
-                "visibility": "public",
+            expected_access = {
+                "bootstrap": "none",
+                "dot-github": "organization",
+                "estate-ci": "none",
+                "github-config": "none",
+                "gitops": "none",
+                "infrastructure-live": "none",
+                "mindclade": "none",
             }
             self.assertEqual(
                 {
                     repository_id: projection["repositories"][repository_id]["actions_access_level"]
                     for repository_id in repository_ids
                 },
-                dict.fromkeys(repository_ids, public_semantics),
+                expected_access,
             )
 
             missing_projection = json.loads(json.dumps(projection))
@@ -363,16 +375,14 @@ class ObservedStateDiffTest(unittest.TestCase):
                 f"/repositories/{repository_id}/actions_access_level"
                 for repository_id in repository_ids
             }
-            self.assertEqual(missing_report["summary"]["missing"], 6)
+            self.assertEqual(missing_report["summary"]["missing"], 7)
             self.assertEqual(
                 {(change["kind"], change["path"]) for change in missing_report["changes"]},
                 {("missing", path) for path in expected_paths},
             )
 
             extra_projection = json.loads(json.dumps(projection))
-            extra_projection["repositories"]["github-config"]["actions_access_level"][
-                "undeclared_actions_control"
-            ] = True
+            extra_projection["repositories"]["github-config"]["undeclared_actions_control"] = True
             observed.write_text(json.dumps({"managed_projection": extra_projection}))
             extra = invoke(
                 "diff",
@@ -391,7 +401,7 @@ class ObservedStateDiffTest(unittest.TestCase):
                 {
                     (
                         "extra",
-                        "/repositories/github-config/actions_access_level/undeclared_actions_control",
+                        "/repositories/github-config/undeclared_actions_control",
                     )
                 },
             )
@@ -903,6 +913,13 @@ class ObservedStateDiffTest(unittest.TestCase):
                     value = {"enabled_repositories": "none"}
                 elif path == "/orgs/mindclade/actions/permissions/fork-pr-contributor-approval":
                     value = {"approval_policy": "first_time_contributors_new_to_github"}
+                elif path == "/orgs/mindclade/actions/secrets":
+                    value = {
+                        "total_count": 1,
+                        "secrets": [{"name": "ORG_TOKEN", "value": "do-not-emit"}],
+                    }
+                elif path == "/orgs/mindclade/actions/variables":
+                    value = {"total_count": 0, "variables": []}
                 elif path == "/orgs/mindclade/actions/oidc/customization/sub":
                     value = {
                         "include_claim_keys": ["repo", "context", "workflow_ref", "workflow_sha"],
@@ -928,6 +945,17 @@ class ObservedStateDiffTest(unittest.TestCase):
                     ]
                 elif path == "/orgs/mindclade/installations":
                     value = {"total_count": 0, "installations": []}
+                elif path == "/search/issues":
+                    value = {"total_count": 0, "items": []}
+                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/secrets"):
+                    value = {
+                        "total_count": 1,
+                        "secrets": [{"name": "REPOSITORY_TOKEN", "value": "do-not-emit"}],
+                    }
+                elif path.startswith("/repos/mindclade/") and path.endswith("/actions/variables"):
+                    value = {"total_count": 0, "variables": []}
+                elif path.startswith("/repos/mindclade/") and path.endswith("/rulesets"):
+                    value = []
                 elif path.startswith("/repos/mindclade/") and path.endswith(
                     "/actions/oidc/customization/sub"
                 ):
@@ -1068,7 +1096,16 @@ class ObservedStateDiffTest(unittest.TestCase):
                     },
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                observed = json.loads(output.read_text())
+                observed_text = output.read_text()
+                self.assertNotIn("do-not-emit", observed_text)
+                observed = json.loads(observed_text)
+                sensitive_inventory = observed["actions_sensitive_inventory"]
+                self.assertEqual(sensitive_inventory["status"], "healthy")
+                self.assertEqual(sensitive_inventory["organization"]["count"], 1)
+                self.assertEqual(
+                    len(sensitive_inventory["organization"]["identifier_digests"]),
+                    1,
+                )
                 self.assertEqual(
                     {path: server.retry_counts[path] for path in server.retry_once},
                     dict.fromkeys(server.retry_once, 2),
@@ -1388,6 +1425,7 @@ class ObservedStateDiffTest(unittest.TestCase):
     def test_repository_inventory_requires_authoritative_organization_totals(self):
         repository_names = [
             ".github",
+            "estate-ci",
             "github-config",
             "bootstrap",
             "infrastructure-live",
@@ -1567,13 +1605,13 @@ class ObservedStateDiffTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     return json.loads(output.read_text())
 
-                restricted = observe("restricted", (0, 7))
+                restricted = observe("restricted", (0, 8))
                 self.assertFalse(restricted["repository_inventory_complete"])
                 self.assertFalse(restricted["core_observation_complete"])
-                self.assertEqual(restricted["repository_inventory"]["enumerated_unique_count"], 6)
-                self.assertEqual(restricted["repository_inventory"]["authoritative_total_count"], 7)
+                self.assertEqual(restricted["repository_inventory"]["enumerated_unique_count"], 7)
+                self.assertEqual(restricted["repository_inventory"]["authoritative_total_count"], 8)
 
-                complete = observe("complete", (0, 6))
+                complete = observe("complete", (0, 7))
                 self.assertTrue(complete["repository_inventory_complete"])
                 self.assertTrue(complete["core_observation_complete"])
 

@@ -6,7 +6,7 @@ metadata:
 spec:
   name: gitops
   description: Desired cluster application state and promotion-by-digest authority.
-  visibility: public
+  visibility: private
   actions_access_level: none
   archived: false
   archive_on_destroy: true

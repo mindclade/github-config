@@ -2,9 +2,8 @@ name: Drift detection
 
 on:
   schedule:
-    # Full observation is intentionally hourly; this exceeds the critical-hourly
-    # and full-daily minimum without creating a second source of drift truth.
-    - cron: "23 * * * *"
+    # One complete nightly diagnostic is the canonical drift signal.
+    - cron: "23 5 * * *"
   workflow_dispatch:
 
 permissions:
@@ -293,8 +292,10 @@ jobs:
           permission-organization-custom-org-roles: read
           permission-organization-custom-properties: read
           permission-organization-plan: read
+          permission-organization-secrets: read
           permission-organization-self-hosted-runners: read
           permission-repository-custom-properties: read
+          permission-secrets: read
           permission-security-events: read
           permission-vulnerability-alerts: read
 
@@ -474,6 +475,20 @@ jobs:
           fi
           echo "github_diff_exit=$status" >> "$GITHUB_ENV"
 
+          set +e
+          bazel run --config=ci //compiler:github-configctl -- \
+            doctor --root "$GITHUB_WORKSPACE" --organization mindclade \
+            --observed "$RUNNER_TEMP/observed.json" \
+            --authority-root "$MINDCLADE_AUTHORITY_ROOT" --require-authorities \
+            --output "$RUNNER_TEMP/doctor.json" \
+            --markdown-output "$RUNNER_TEMP/doctor.md"
+          doctor_status=$?
+          set -e
+          if [[ "$doctor_status" != "0" && "$doctor_status" != "1" && "$doctor_status" != "2" ]]; then
+            exit "$doctor_status"
+          fi
+          echo "doctor_exit=$doctor_status" >> "$GITHUB_ENV"
+
       - name: Produce the provider drift plan
         id: tofu-plan
         env:
@@ -502,6 +517,8 @@ jobs:
                 adopted_repository_custom_properties: ($preflight[0].adopted_repository_custom_properties // {}),
                 adopted_repository_names: ($preflight[0].adopted_repository_names // {}),
                 adopted_repository_oidc_templates: ($preflight[0].adopted_repository_oidc_templates // {}),
+                adopted_repository_ruleset_ids: ($preflight[0].adopted_repository_ruleset_ids // {}),
+                adopted_repository_ruleset_enforcements: ($preflight[0].adopted_repository_ruleset_enforcements // {}),
                 adopted_ruleset_ids: ($preflight[0].adopted_ruleset_ids // {}),
                 adopted_ruleset_enforcements: ($preflight[0].adopted_ruleset_enforcements // {}),
                 adopted_security_manager_assignments: ($preflight[0].adopted_security_manager_assignments // {}),
@@ -570,6 +587,7 @@ jobs:
           APP_TOKEN_OUTCOME: ${{ steps.app-token.outcome }}
           CONTRACT_GATE_OUTCOME: ${{ steps.contract-gate.outcome }}
           GITHUB_DIFF_EXIT: ${{ env.github_diff_exit }}
+          DOCTOR_EXIT: ${{ env.doctor_exit }}
           GOOGLE_AUTH_OUTCOME: ${{ steps.google-auth.outcome }}
           IDENTITY_GATE_OUTCOME: ${{ steps.identity-gate.outcome }}
           OBSERVE_OUTCOME: ${{ steps.observe.outcome }}
@@ -591,6 +609,7 @@ jobs:
           }
           catalog_digest="$(digest_file "$RUNNER_TEMP/catalog.json")"
           drift_digest="$(digest_file "$RUNNER_TEMP/github-drift.json")"
+          doctor_digest="$(digest_file "$RUNNER_TEMP/doctor.json")"
           evidence_digest="$(digest_file "$RUNNER_TEMP/drift-evidence.json")"
           preflight_digest="$(digest_file "$RUNNER_TEMP/preflight.json")"
           status="clean"
@@ -606,6 +625,11 @@ jobs:
             status="operational_error"
           elif [[ "$status" == "clean" ]] && \
             { [[ "$PREFLIGHT_EXIT" == "2" ]] || [[ "$GITHUB_DIFF_EXIT" == "2" ]] || [[ "$PROVIDER_EXIT" == "2" ]]; }; then
+            status="drift"
+          fi
+          if [[ "$DOCTOR_EXIT" == "1" ]]; then
+            status="operational_error"
+          elif [[ "$status" == "clean" && "$DOCTOR_EXIT" == "2" ]]; then
             status="drift"
           fi
           jq -S -n \
@@ -630,9 +654,11 @@ jobs:
             --arg provider "$PROVIDER_OUTCOME" \
             --arg preflight_exit "$PREFLIGHT_EXIT" \
             --arg github_diff_exit "$GITHUB_DIFF_EXIT" \
+            --arg doctor_exit "$DOCTOR_EXIT" \
             --arg provider_exit "$PROVIDER_EXIT" \
             --arg catalog_digest "$catalog_digest" \
             --arg drift_digest "$drift_digest" \
+            --arg doctor_digest "$doctor_digest" \
             --arg evidence_digest "$evidence_digest" \
             --arg preflight_digest "$preflight_digest" '
               {
@@ -661,11 +687,13 @@ jobs:
                   provider: $provider,
                   preflight_exit: $preflight_exit,
                   github_diff_exit: $github_diff_exit,
+                  doctor_exit: $doctor_exit,
                   provider_exit: $provider_exit
                 },
                 digests: ({}
                   + (if $catalog_digest == "" then {} else {catalog: ("sha256:" + $catalog_digest)} end)
                   + (if $drift_digest == "" then {} else {github_drift: ("sha256:" + $drift_digest)} end)
+                  + (if $doctor_digest == "" then {} else {doctor: ("sha256:" + $doctor_digest)} end)
                   + (if $evidence_digest == "" then {} else {drift_evidence: ("sha256:" + $evidence_digest)} end)
                   + (if $preflight_digest == "" then {} else {preflight: ("sha256:" + $preflight_digest)} end))
               }
@@ -685,42 +713,63 @@ jobs:
           path: |-
             ${{ runner.temp }}/drift-run-diagnostic.json
             ${{ runner.temp }}/github-drift.json
+            ${{ runner.temp }}/doctor.json
+            ${{ runner.temp }}/doctor.md
             ${{ runner.temp }}/drift-evidence.json
           if-no-files-found: error
           retention-days: 7
 
       - name: Fail on drift
-        if: ${{ always() && (failure() || env.preflight_exit == '2' || steps.tofu-plan.outputs.exitcode == '1' || steps.tofu-plan.outputs.exitcode == '2' || env.github_diff_exit == '2') }}
+        if: ${{ always() && (failure() || env.doctor_exit == '1' || env.doctor_exit == '2' || env.preflight_exit == '2' || steps.tofu-plan.outputs.exitcode == '1' || steps.tofu-plan.outputs.exitcode == '2' || env.github_diff_exit == '2') }}
         run: exit 2
 
   report:
-    name: report drift failure
+    name: reconcile doctor issue
     needs: drift
-    if: ${{ always() && needs.drift.result == 'failure' }}
+    if: ${{ always() && needs.drift.result != 'skipped' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
       issues: write
     steps:
-      - name: Open or update the drift issue
+      - name: Open, update, or close the canonical drift issue
         env:
+          DRIFT_RESULT: ${{ needs.drift.result }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          marker="<!-- github-config-doctor-drift:v1 -->"
           title="GitHub governance drift detected"
           body_file="$RUNNER_TEMP/drift-issue.md"
           {
-            echo "Automated drift detection found a catalog difference, qualification regression, or provider error."
+            echo "$marker"
+            echo
+            echo "Estate CI doctor found drift, incomplete observation, or an operational failure."
             echo
             echo "- Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
             echo "- Source: \`${GITHUB_SHA}\`"
+            echo "- Result: \`${DRIFT_RESULT}\`"
             echo
             echo "Review the redacted evidence artifact. Do not repair settings manually; submit a catalog correction or use the protected recovery runbook."
           } > "$body_file"
-          issue_number="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
-          if [[ -n "$issue_number" ]]; then
-            gh issue edit "$issue_number" --body-file "$body_file"
+          issue_number="$(gh api --method GET /search/issues \
+            -f q="repo:${GITHUB_REPOSITORY} is:issue in:body \"github-config-doctor-drift:v1\"" \
+            --jq '[.items[] | select(.body | contains("<!-- github-config-doctor-drift:v1 -->")) | .number] | sort | .[0] // empty')"
+          if [[ "$DRIFT_RESULT" == "success" ]]; then
+            if [[ -n "$issue_number" ]]; then
+              issue_state="$(gh issue view "$issue_number" --json state --jq .state)"
+              if [[ "$issue_state" == "OPEN" ]]; then
+                gh issue close "$issue_number" --reason completed \
+                  --comment "Recovered on ${GITHUB_SHA}; see ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+              fi
+            fi
+          elif [[ -n "$issue_number" ]]; then
+            issue_state="$(gh issue view "$issue_number" --json state --jq .state)"
+            if [[ "$issue_state" == "CLOSED" ]]; then
+              gh issue reopen "$issue_number"
+            fi
+            gh issue edit "$issue_number" --title "$title" --body-file "$body_file"
           else
             gh issue create --title "$title" --body-file "$body_file"
           fi

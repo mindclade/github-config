@@ -44,6 +44,7 @@ class CompilerDeterminismTest(unittest.TestCase):
             second = Path(second_temp)
             shutil.copytree(ROOT / "config", second / "config")
             shutil.copytree(ROOT / "schemas", second / "schemas")
+            shutil.copytree(ROOT / "generated", second / "generated")
             shutil.copy2(ROOT / "component.yaml", second / "component.yaml")
 
             organization = second / "config" / "organization.yaml"
