@@ -63,6 +63,10 @@ updates:
       day: monday
       time: "06:45"
       timezone: America/Detroit
+    groups:
+      opentofu-providers:
+        patterns:
+          - "*"
     labels:
       - dependencies
       - opentofu

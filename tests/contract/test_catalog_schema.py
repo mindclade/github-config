@@ -1646,7 +1646,7 @@ class CatalogSchemaTest(unittest.TestCase):
         workflow.write_text(
             workflow.read_text().replace(
                 "mindclade/.github/.github/workflows/reusable-nix-validation.yml@"
-                "f9b6ebcecd197157d9466eeacf8e2864e32c9a79",
+                "fc5af9efc19b47078fe446feee750d7f4973195b",
                 "mindclade/.github/.github/workflows/reusable-required-check.yml@" + "a" * 40,
                 1,
             )
@@ -1666,7 +1666,7 @@ class CatalogSchemaTest(unittest.TestCase):
         workflow.write_text(
             workflow.read_text().replace(
                 "mindclade/.github/.github/workflows/reusable-nix-validation.yml@"
-                "f9b6ebcecd197157d9466eeacf8e2864e32c9a79",
+                "fc5af9efc19b47078fe446feee750d7f4973195b",
                 "mindclade/.github/.github/workflows/not-declared.yml@" + implementation_revision,
                 1,
             )
