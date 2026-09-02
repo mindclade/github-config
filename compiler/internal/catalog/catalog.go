@@ -120,6 +120,7 @@ var schemaFiles = []string{
 var canonicalWorkflowInventories = map[string][]string{
 	"github-config": {
 		"drift-detection.yml", "protected-apply.yml", "pull-request.yml",
+		"renovate.yml",
 	},
 	".github": {
 		"reusable-buildkite-dispatch.yml", "reusable-required-check.yml",
@@ -729,8 +730,13 @@ func PolicyInput(root string) (map[string]any, error) {
 			result["integrations"] = append(result["integrations"].([]any), document.Raw)
 		}
 	}
-	workflows := make([]any, 0, 3)
-	for _, name := range []string{"drift-detection.yml", "protected-apply.yml", "pull-request.yml"} {
+	// The canonical inventory is the single registration point for a workflow.
+	// Deriving the policy input from it keeps source-pinning policy and the Go
+	// pin validation over the same set: a workflow cannot be added to one and
+	// silently escape the other.
+	githubConfigWorkflows := canonicalWorkflowInventories["github-config"]
+	workflows := make([]any, 0, len(githubConfigWorkflows))
+	for _, name := range githubConfigWorkflows {
 		path := filepath.Join(absoluteRoot, ".github", "workflows", name)
 		value, err := decodeYAML(path)
 		if err != nil {

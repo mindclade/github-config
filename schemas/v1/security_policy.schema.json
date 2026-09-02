@@ -40,8 +40,6 @@
       "required": [
         "security_manager_team",
         "dependency_graph_required",
-        "dependabot_alerts_required",
-        "dependabot_security_updates_required",
         "advanced_security_required",
         "code_scanning_default_setup_required",
         "secret_scanning_required",
@@ -53,8 +51,6 @@
       "properties": {
         "security_manager_team": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$" },
         "dependency_graph_required": { "type": "boolean" },
-        "dependabot_alerts_required": { "type": "boolean" },
-        "dependabot_security_updates_required": { "type": "boolean" },
         "advanced_security_required": { "type": "boolean" },
         "code_scanning_default_setup_required": { "type": "boolean" },
         "secret_scanning_required": { "type": "boolean" },

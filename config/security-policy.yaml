@@ -6,8 +6,6 @@ metadata:
 spec:
   security_manager_team: security
   dependency_graph_required: true
-  dependabot_alerts_required: true
-  dependabot_security_updates_required: true
   advanced_security_required: true
   code_scanning_default_setup_required: true
   secret_scanning_required: true

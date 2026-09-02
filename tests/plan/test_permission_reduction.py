@@ -546,7 +546,6 @@ class PermissionReductionTest(unittest.TestCase):
                 "repository_team_grants": {
                     "github-config": [{"slug": "security", "permission": "maintain"}],
                 },
-                "repository_dependabot_security_updates": {"github-config": True},
                 "repository_custom_properties": {"github-config": []},
                 "repository_direct_collaborators": {"github-config": []},
                 "organization_custom_properties": [
@@ -623,9 +622,6 @@ class PermissionReductionTest(unittest.TestCase):
             self.assertEqual(
                 report["adopted_team_repository_grants"]["github-config:security"],
                 "10:github-config",
-            )
-            self.assertEqual(
-                report["adopted_dependabot_security_updates"], {"github-config": "github-config"}
             )
             self.assertEqual(
                 report["adopted_organization_custom_properties"],

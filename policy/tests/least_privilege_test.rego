@@ -39,9 +39,8 @@ test_repository_security_weakening_denied if {
 			"direct_collaborators": [],
 			"team_grants": [],
 			"security": {
-				"vulnerability_alerts": true,
-				"dependabot_security_updates": false,
-				"advanced_security": true,
+				"code_scanning_mode": "advanced",
+				"advanced_security": false,
 				"secret_scanning": true,
 				"secret_scanning_push_protection": true,
 			},
@@ -50,7 +49,7 @@ test_repository_security_weakening_denied if {
 		"integrations": [],
 	}
 	some message in denials
-	contains(message, "Dependabot security updates")
+	contains(message, "advanced code scanning without advanced security")
 }
 
 test_unapproved_app_write_denied if {

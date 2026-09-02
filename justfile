@@ -29,6 +29,7 @@ lint:
     pyright
     cd compiler && golangci-lint run --config ../.golangci.yml ./...
     actionlint .github/workflows/*.yml
+    zizmor --no-progress --offline .github/workflows/*.yml
     yamllint --config-file .yamllint.yaml .
     markdownlint-cli2
 
@@ -67,6 +68,7 @@ tofu-check:
 
 workflow-lint:
     actionlint .github/workflows/*.yml
+    zizmor --no-progress --offline .github/workflows/*.yml
 
 workflow-contract:
     temporary="$(mktemp -d)"; trap 'rm -rf "$temporary"' EXIT; cd compiler; go run ./cmd/github-configctl --root .. workflow-contract --output "$temporary/workflow-contract.json"
@@ -80,6 +82,11 @@ whitespace-check:
 flake-check:
     nix flake check --no-accept-flake-config --no-build --no-update-lock-file
 
-check: format-check lint validate workflow-contract go-test python-test bazel-test policy-test tofu-check whitespace-check flake-check
+# Vulnerability scan of declared dependencies. Requires network access to the
+# OSV database, so it is deliberately separate from the hermetic lint recipe.
+security:
+    osv-scanner scan source --recursive .
+
+check: format-check lint validate workflow-contract go-test python-test bazel-test policy-test tofu-check whitespace-check security flake-check
 
 ci: check

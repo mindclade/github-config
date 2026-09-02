@@ -1,0 +1,117 @@
+name: Renovate
+
+"on":
+  schedule:
+    # One organization-wide dependency pass per day. Renovate groups compatible
+    # updates, so this replaces the per-ecosystem, per-repository Dependabot fan-out.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Run Renovate read-only and open no pull requests.
+        type: boolean
+        default: true
+      log_level:
+        description: Renovate log level.
+        type: choice
+        options: [info, debug]
+        default: info
+
+permissions:
+  contents: read
+
+concurrency:
+  group: estate-renovate
+  cancel-in-progress: false
+
+jobs:
+  renovate:
+    name: organization dependency pass
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Bind the runner identity before any third-party action
+        env:
+          APP_ID: ${{ vars.GHCFG_RENOVATE_APP_ID }}
+          INSTALLATION_ID: ${{ vars.GHCFG_RENOVATE_APP_INSTALLATION_ID }}
+          KEY_SECRET: ${{ vars.GHCFG_RENOVATE_APP_KEY_SECRET }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_RENOVATE }}
+          WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_RENOVATE }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/main"
+          [[ "${APP_ID}" =~ ^[0-9]+$ ]]
+          [[ "${INSTALLATION_ID}" =~ ^[0-9]+$ ]]
+          [[ "${KEY_SECRET}" =~ ^projects/[^/]+/secrets/[A-Za-z0-9_-]+/versions/[A-Za-z0-9]+$ ]]
+          [[ "${SERVICE_ACCOUNT}" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$ ]]
+          [[ "${WIF_PROVIDER}" =~ ^projects/[0-9]+/locations/global/workloadIdentityPools/[A-Za-z0-9_-]+/providers/[A-Za-z0-9_-]+$ ]]
+
+      - name: Check out the pinned runner configuration
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Authenticate the Renovate cloud identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          audience: sts.googleapis.com
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER_GITHUB_CONFIG_RENOVATE }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT_GITHUB_CONFIG_RENOVATE }}
+          create_credentials_file: true
+          export_environment_variables: true
+
+      - name: Configure the pinned Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+
+      - name: Read the Renovate App key
+        id: app-key
+        uses: google-github-actions/get-secretmanager-secrets@bc9c54b29fdffb8a47776820a7d26e77b379d262 # v3.0.0
+        with:
+          secrets: |-
+            private_key:${{ vars.GHCFG_RENOVATE_APP_KEY_SECRET }}
+
+      - name: Mint the Renovate App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.GHCFG_RENOVATE_APP_ID }}
+          private-key: ${{ steps.app-key.outputs.private_key }}
+          owner: mindclade
+          repositories: |-
+            .github
+            bootstrap
+            estate-ci
+            github-config
+            gitops
+            infrastructure-live
+            mindclade
+          permission-administration: read
+          permission-metadata: read
+          permission-contents: write
+          permission-workflows: write
+          permission-issues: write
+          permission-pull-requests: write
+
+      - name: Bind the minted installation to the declared identity
+        env:
+          DECLARED_INSTALLATION_ID: ${{ vars.GHCFG_RENOVATE_APP_INSTALLATION_ID }}
+          OBSERVED_INSTALLATION_ID: ${{ steps.app-token.outputs.installation-id }}
+        run: |
+          set -euo pipefail
+          test "${OBSERVED_INSTALLATION_ID}" = "${DECLARED_INSTALLATION_ID}"
+
+      - name: Run pinned self-hosted Renovate
+        uses: renovatebot/github-action@5402b206248e5a8c8427a15102702eb9c1793efc # v46.2.4
+        with:
+          configurationFile: .github/renovate-runner.json
+          token: ${{ steps.app-token.outputs.token }}
+          # Tag plus digest: the digest is authoritative for the pull.
+          renovate-version: 44.52.0@sha256:778ff1b404d79ef7763f0c904ebb279a4138ffc1017181ad076b1648e37f6dbd
+        env:
+          LOG_LEVEL: ${{ inputs.log_level || 'info' }}
+          RENOVATE_DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && 'full' || '' }}
+          RENOVATE_PLATFORM_COMMIT: "true"

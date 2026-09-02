@@ -61,16 +61,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "vulnerability_alerts",
-        "dependabot_security_updates",
         "advanced_security",
+        "code_scanning_mode",
         "secret_scanning",
         "secret_scanning_push_protection"
       ],
       "properties": {
-        "vulnerability_alerts": { "type": "boolean" },
-        "dependabot_security_updates": { "type": "boolean" },
         "advanced_security": { "type": "boolean" },
+        "code_scanning_mode": { "enum": ["default", "advanced"] },
         "secret_scanning": { "type": "boolean" },
         "secret_scanning_push_protection": { "type": "boolean" }
       }

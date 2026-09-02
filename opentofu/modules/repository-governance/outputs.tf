@@ -18,7 +18,6 @@ output "managed_resource_ids" {
   value = {
     repositories           = { for key, repository in github_repository.this : key => repository.id }
     custom_properties      = { for key, property in github_repository_custom_property.this : key => property.id }
-    dependabot             = { for key, setting in github_repository_dependabot_security_updates.this : key => setting.id }
     actions_access_levels  = { for key, access in github_actions_repository_access_level.this : key => access.id }
     oidc_subject_templates = { for key, template in github_actions_repository_oidc_subject_claim_customization_template.this : key => template.id }
   }

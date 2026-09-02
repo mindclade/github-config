@@ -144,8 +144,7 @@ func ManagedProjection(catalog map[string]any) map[string]any {
 	result["actions_policy"] = projectedActions
 	security, _ := catalog["security_policy"].(map[string]any)
 	result["security_policy"] = pick(security, []string{
-		"security_manager_team", "dependency_graph_required", "dependabot_alerts_required",
-		"dependabot_security_updates_required", "advanced_security_required",
+		"security_manager_team", "dependency_graph_required", "advanced_security_required",
 		"code_scanning_default_setup_required", "secret_scanning_required",
 		"secret_scanning_push_protection_required", "private_vulnerability_reporting_required",
 	})
@@ -196,7 +195,7 @@ func ManagedProjection(catalog map[string]any) map[string]any {
 		projected["web_commit_signoff_required"] = organization["web_commit_signoff_required"]
 		security, _ := spec["security"].(map[string]any)
 		projected["security"] = pick(security, []string{
-			"vulnerability_alerts", "dependabot_security_updates", "advanced_security",
+			"advanced_security", "code_scanning_mode",
 			"secret_scanning", "secret_scanning_push_protection",
 		})
 		projected["team_grants"] = projectObjectList(spec["team_grants"], []string{"team", "permission"})
@@ -621,9 +620,7 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 	environments := make(map[string]any, len(repositoryNames))
 	repositoryTeams := make(map[string][]any, len(repositoryNames))
 	directCollaborators := make(map[string][]any, len(repositoryNames))
-	vulnerabilityAlerts := make(map[string]any, len(repositoryNames))
 	dependencyGraph := make(map[string]any, len(repositoryNames))
-	dependabotSecurityUpdates := make(map[string]any, len(repositoryNames))
 	codeScanningDefaultSetup := make(map[string]any, len(repositoryNames))
 	privateVulnerabilityReporting := make(map[string]any, len(repositoryNames))
 	repositoryCustomProperties := make(map[string]any, len(repositoryNames))
@@ -759,19 +756,10 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		if err != nil {
 			return nil, fmt.Errorf("observe direct collaborators for repository %q: %w", repository, err)
 		}
-		vulnerabilityAlerts[repository], err = client.checkEnabled(ctx, repositoryPath+"/vulnerability-alerts")
-		if err != nil {
-			return nil, fmt.Errorf("observe vulnerability alerts for repository %q: %w", repository, err)
-		}
 		dependencyGraph[repository], err = client.checkEnabled(ctx, repositoryPath+"/dependency-graph/sbom")
 		if err != nil {
 			recordCapabilityError("dependency_graph:"+repository, err)
 			dependencyGraph[repository] = unknownValue()
-		}
-		dependabotSecurityUpdates[repository], err = client.checkEnabled(ctx, repositoryPath+"/automated-security-fixes")
-		if err != nil {
-			recordCapabilityError("dependabot_security_updates:"+repository, err)
-			dependabotSecurityUpdates[repository] = unknownValue()
 		}
 		propertyValues, propertyErr := client.getList(ctx, repositoryPath+"/properties/values")
 		if propertyErr != nil {
@@ -870,14 +858,13 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 		"teams":                    teams, "repositories": repositories, "rulesets": rulesets,
 		"repository_rulesets": repositoryRulesets,
 		"environments":        environments, "integrations": integrations,
-		"actions_sensitive_inventory":            secretMetadata,
-		"founder_pr_bypass_audit":                founderBypassAudit,
-		"team_members":                           teamMembers,
-		"repository_team_grants":                 repositoryTeams,
-		"repository_direct_collaborators":        directCollaborators,
-		"repository_custom_properties":           repositoryCustomProperties,
-		"repository_actions_access_levels":       repositoryActionsAccess,
-		"repository_dependabot_security_updates": dependabotSecurityUpdates,
+		"actions_sensitive_inventory":      secretMetadata,
+		"founder_pr_bypass_audit":          founderBypassAudit,
+		"team_members":                     teamMembers,
+		"repository_team_grants":           repositoryTeams,
+		"repository_direct_collaborators":  directCollaborators,
+		"repository_custom_properties":     repositoryCustomProperties,
+		"repository_actions_access_levels": repositoryActionsAccess,
 		"capabilities": map[string]any{
 			"enterprise_cloud":                 strings.Contains(strings.ToLower(planName), "enterprise"),
 			"advanced_security":                repositoriesHaveAdvancedSecurity(repositories),
@@ -896,8 +883,8 @@ func Observe(ctx context.Context, organization, apiBase, token string, repositor
 			runners:       runnersRaw, runnersKnown: runnersKnown,
 			selfHostedPolicy: selfHostedPolicyRaw, selfHostedPolicyKnown: selfHostedPolicyKnown,
 			teamMembers: teamMembers, repositoryTeams: repositoryTeams,
-			directCollaborators: directCollaborators, vulnerabilityAlerts: vulnerabilityAlerts,
-			dependencyGraph: dependencyGraph, dependabotSecurityUpdates: dependabotSecurityUpdates,
+			directCollaborators:           directCollaborators,
+			dependencyGraph:               dependencyGraph,
 			codeScanningDefaultSetup:      codeScanningDefaultSetup,
 			privateVulnerabilityReporting: privateVulnerabilityReporting,
 			repositoryCustomProperties:    repositoryCustomProperties,
@@ -977,9 +964,7 @@ type observationDetails struct {
 	teamMembers                   map[string][]any
 	repositoryTeams               map[string][]any
 	directCollaborators           map[string][]any
-	vulnerabilityAlerts           map[string]any
 	dependencyGraph               map[string]any
-	dependabotSecurityUpdates     map[string]any
 	codeScanningDefaultSetup      map[string]any
 	privateVulnerabilityReporting map[string]any
 	repositoryCustomProperties    map[string]any
@@ -1939,9 +1924,8 @@ func projectObservedRepository(
 	}
 	securityRaw, _ := repository["security_and_analysis"].(map[string]any)
 	entry["security"] = map[string]any{
-		"vulnerability_alerts":            details.vulnerabilityAlerts[name],
-		"dependabot_security_updates":     details.dependabotSecurityUpdates[name],
 		"advanced_security":               statusEnabledOrUnknown(securityRaw, "advanced_security"),
+		"code_scanning_mode":              observedCodeScanningMode(details.codeScanningDefaultSetup[name]),
 		"secret_scanning":                 statusEnabledOrUnknown(securityRaw, "secret_scanning"),
 		"secret_scanning_push_protection": statusEnabledOrUnknown(securityRaw, "secret_scanning_push_protection"),
 	}
@@ -2019,15 +2003,12 @@ func observedSecurityProjection(desired map[string]any, repositories map[string]
 		"dependency_graph_required": func() any {
 			return allRepositoryBools(desiredRepositories, details.dependencyGraph)
 		},
-		"dependabot_alerts_required": func() any {
-			return allRepositoryBools(desiredRepositories, details.vulnerabilityAlerts)
-		},
-		"dependabot_security_updates_required": func() any {
-			return allRepositoryBools(desiredRepositories, details.dependabotSecurityUpdates)
-		},
 		"advanced_security_required": func() any { return checkStatus("advanced_security") },
 		"code_scanning_default_setup_required": func() any {
-			return allRepositoryBools(desiredRepositories, details.codeScanningDefaultSetup)
+			return allRepositoryBools(
+				repositoriesInCodeScanningMode(desiredRepositories, "default"),
+				details.codeScanningDefaultSetup,
+			)
 		},
 		"secret_scanning_required":                 func() any { return checkStatus("secret_scanning") },
 		"secret_scanning_push_protection_required": func() any { return checkStatus("secret_scanning_push_protection") },
@@ -2041,6 +2022,37 @@ func observedSecurityProjection(desired map[string]any, repositories map[string]
 		}
 	}
 	return result
+}
+
+// repositoriesInCodeScanningMode narrows the desired set to repositories that
+// declare the given code-scanning mode. GitHub's default setup and a repository
+// owned advanced analysis are mutually exclusive, so an organization-wide
+// requirement can only be asserted of the repositories that chose that mode.
+func repositoriesInCodeScanningMode(desiredRepositories map[string]any, mode string) map[string]any {
+	selected := make(map[string]any, len(desiredRepositories))
+	for key, rawSpec := range desiredRepositories {
+		spec, _ := rawSpec.(map[string]any)
+		security, _ := spec["security"].(map[string]any)
+		if declared, _ := security["code_scanning_mode"].(string); declared == mode {
+			selected[key] = rawSpec
+		}
+	}
+	return selected
+}
+
+// observedCodeScanningMode reports the mode a repository is observably in.
+// Default setup being configured is the only positive signal GitHub exposes;
+// its absence means the repository is running its own advanced analysis.
+func observedCodeScanningMode(defaultSetup any) any {
+	switch value := defaultSetup.(type) {
+	case bool:
+		if value {
+			return "default"
+		}
+		return "advanced"
+	default:
+		return unknownValue()
+	}
 }
 
 func allRepositoryBools(desiredRepositories map[string]any, observed map[string]any) any {

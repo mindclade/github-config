@@ -109,7 +109,6 @@ func ValidateCatalog(documents []*Document) error {
 		case "SecurityPolicy":
 			if spec, ok := document.Spec.(map[string]any); ok {
 				for _, key := range []string{
-					"dependabot_alerts_required", "dependabot_security_updates_required",
 					"advanced_security_required", "secret_scanning_required",
 					"secret_scanning_push_protection_required",
 				} {
@@ -361,8 +360,6 @@ func ValidateCatalog(documents []*Document) error {
 			}
 			repositorySecurity := specObject(spec, "security")
 			requirementFields := map[string]string{
-				"dependabot_alerts_required":               "vulnerability_alerts",
-				"dependabot_security_updates_required":     "dependabot_security_updates",
 				"advanced_security_required":               "advanced_security",
 				"secret_scanning_required":                 "secret_scanning",
 				"secret_scanning_push_protection_required": "secret_scanning_push_protection",
@@ -1548,7 +1545,7 @@ func adoptionBindings(
 		"adopted_repository_actions_access_levels", "adopted_repository_oidc_templates", "adopted_repository_custom_properties",
 		"adopted_memberships", "adopted_team_memberships",
 		"adopted_team_repository_grants", "adopted_security_manager_assignments",
-		"adopted_dependabot_security_updates", "adopted_outside_collaborator_grants",
+		"adopted_outside_collaborator_grants",
 	} {
 		maps[key] = make(map[string]any)
 	}
@@ -1723,13 +1720,11 @@ func bindAdditionalAdoptions(
 	observedRepositoryActionsAccess, _ := observed["repository_actions_access_levels"].(map[string]any)
 	observedRepositoryProperties, _ := observed["repository_custom_properties"].(map[string]any)
 	observedRepositoryGrants, _ := observed["repository_team_grants"].(map[string]any)
-	observedDependabot, _ := observed["repository_dependabot_security_updates"].(map[string]any)
 	observedCollaborators, _ := observed["repository_direct_collaborators"].(map[string]any)
 	adoptedRepositoryOIDC := maps["adopted_repository_oidc_templates"].(map[string]any)
 	adoptedRepositoryActionsAccess := maps["adopted_repository_actions_access_levels"].(map[string]any)
 	adoptedRepositoryProperties := maps["adopted_repository_custom_properties"].(map[string]any)
 	adoptedTeamGrants := maps["adopted_team_repository_grants"].(map[string]any)
-	adoptedDependabot := maps["adopted_dependabot_security_updates"].(map[string]any)
 	adoptedOutsideGrants := maps["adopted_outside_collaborator_grants"].(map[string]any)
 	for repositoryKey, rawRepository := range desiredRepositories {
 		repository, _ := rawRepository.(map[string]any)
@@ -1767,12 +1762,6 @@ func bindAdditionalAdoptions(
 			}
 			key := repositoryKey + ":" + teamKey
 			adoptedTeamGrants[key] = fmt.Sprintf("%d:%s", teamID, repositoryName)
-		}
-		security := specObject(repository, "security")
-		if desiredEnabled, exists := security["dependabot_security_updates"].(bool); exists {
-			if liveEnabled, known := observedDependabot[repositoryName].(bool); known && liveEnabled == desiredEnabled {
-				adoptedDependabot[repositoryKey] = repositoryName
-			}
 		}
 		for _, collaborator := range anyList(desired["outside_collaborators"]) {
 			spec, _ := collaborator.(map[string]any)

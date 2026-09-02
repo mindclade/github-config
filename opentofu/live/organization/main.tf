@@ -510,21 +510,6 @@ variable "adopted_security_manager_assignments" {
   }
 }
 
-variable "adopted_dependabot_security_updates" {
-  description = "Reviewed existing Dependabot security-update settings keyed by catalog repository identifier."
-  type        = map(string)
-  default     = {}
-
-  validation {
-    condition = alltrue([
-      for repository_key, import_id in var.adopted_dependabot_security_updates :
-      try(var.catalog.repositories[repository_key].security != null, false) &&
-      try(var.catalog.repositories[repository_key].name == import_id, false)
-    ])
-    error_message = "Dependabot imports must exactly bind security-managed catalog repositories to repository names."
-  }
-}
-
 variable "adopted_outside_collaborator_grants" {
   description = "Reviewed existing outside-collaborator grants keyed by normalized-login:repository."
   type        = map(string)

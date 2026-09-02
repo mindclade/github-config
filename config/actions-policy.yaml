@@ -92,3 +92,5 @@ spec:
       commit: a1320f892987e89d278cc92dc5adc984fb93aca4
     - source: github/codeql-action
       commit: cdf488f595d80d6e07e03d4674febd5ab45fa938
+    - source: renovatebot/github-action
+      commit: 5402b206248e5a8c8427a15102702eb9c1793efc

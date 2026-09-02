@@ -54,13 +54,6 @@ import {
 }
 
 import {
-  for_each = var.adopted_dependabot_security_updates
-
-  to = module.repository_governance.github_repository_dependabot_security_updates.this[each.key]
-  id = each.value
-}
-
-import {
   for_each = var.adopted_team_ids
 
   to = module.team_access.github_team.this[each.key]

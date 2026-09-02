@@ -43,14 +43,16 @@ deny contains sprintf("repository %q grants team %q admin", [repository.spec.nam
 	grant.permission == "admin"
 }
 
-deny contains sprintf("repository %q disables vulnerability alerts", [repository.spec.name]) if {
+# Code scanning is either GitHub's default setup or a repository-owned advanced
+# workflow, never both. Advanced analysis uploads SARIF, which requires advanced
+# security to be enabled on the repository.
+deny contains sprintf(
+	"repository %q selects advanced code scanning without advanced security",
+	[repository.spec.name],
+) if {
 	some repository in input.repositories
-	repository.spec.security.vulnerability_alerts == false
-}
-
-deny contains sprintf("repository %q disables Dependabot security updates", [repository.spec.name]) if {
-	some repository in input.repositories
-	repository.spec.security.dependabot_security_updates == false
+	repository.spec.security.code_scanning_mode == "advanced"
+	repository.spec.security.advanced_security == false
 }
 
 deny contains sprintf("repository %q disables advanced security", [repository.spec.name]) if {

@@ -16,11 +16,11 @@ go_sdk.download(version = "1.26.7")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 
-# Dependabot stages nested files by matching *_from_file assignments in the
+# Renovate stages nested files by matching *_from_file assignments in the
 # raw module text before regenerating MODULE.bazel.lock. Keep both literals.
 go_mod_from_file = "//compiler:go.mod"
 
-# Dependabot staging hint: go_sum_from_file = "//compiler:go.sum"
+# Renovate staging hint: go_sum_from_file = "//compiler:go.sum"
 
 go_deps.from_file(go_mod = go_mod_from_file)
 use_repo(

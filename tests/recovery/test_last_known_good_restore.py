@@ -955,12 +955,20 @@ class LastKnownGoodRestoreTest(unittest.TestCase):
                         },
                     },
                     {
-                        "address": 'github_repository_dependabot_security_updates.this["github-config"]',
-                        "type": "github_repository_dependabot_security_updates",
+                        "address": 'github_repository.governed["mindclade"]',
+                        "type": "github_repository",
                         "change": {
                             "actions": ["update"],
-                            "before": {"enabled": True},
-                            "after": {"enabled": False},
+                            "before": {
+                                "security_and_analysis": [
+                                    {"advanced_security": [{"status": "enabled"}]}
+                                ]
+                            },
+                            "after": {
+                                "security_and_analysis": [
+                                    {"advanced_security": [{"status": "disabled"}]}
+                                ]
+                            },
                         },
                     },
                     {

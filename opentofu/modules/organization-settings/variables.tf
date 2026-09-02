@@ -115,8 +115,6 @@ variable "security_policy" {
   type = object({
     security_manager_team                    = string
     dependency_graph_required                = bool
-    dependabot_alerts_required               = bool
-    dependabot_security_updates_required     = bool
     advanced_security_required               = bool
     code_scanning_default_setup_required     = bool
     secret_scanning_required                 = bool

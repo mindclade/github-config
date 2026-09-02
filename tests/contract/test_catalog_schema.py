@@ -70,7 +70,7 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(validation["status"], "valid")
         self.assertRegex(validation["source_digest"], r"^sha256:[0-9a-f]{64}$")
 
-    def test_bazel_dependabot_stages_nested_go_module(self):
+    def test_bazel_renovate_stages_nested_go_module(self):
         module = (ROOT / "MODULE.bazel").read_text(encoding="utf-8")
         for required in (
             'go_mod_from_file = "//compiler:go.mod"',
@@ -887,11 +887,13 @@ class CatalogSchemaTest(unittest.TestCase):
             "pyproject.toml",
             ".github/CODEOWNERS",
             ".github/actionlint.yaml",
-            ".github/dependabot.yml",
+            ".github/renovate.json",
+            ".github/renovate-runner.json",
             ".github/pull_request_template.md",
             ".github/workflows/pull-request.yml",
             ".github/workflows/drift-detection.yml",
             ".github/workflows/protected-apply.yml",
+            ".github/workflows/renovate.yml",
             "config/organization.yaml",
             "config/actions-policy.yaml",
             "config/security-policy.yaml",
@@ -1097,7 +1099,7 @@ class CatalogSchemaTest(unittest.TestCase):
         self.assertEqual(len(policy_input["rulesets"]), 5)
         self.assertNotIn("repository_gates", policy_input)
         self.assertEqual(len(policy_input["environments"]), 4)
-        self.assertEqual(len(policy_input["workflows"]), 3)
+        self.assertEqual(len(policy_input["workflows"]), 4)
         self.assertTrue(all(workflow["uses"] for workflow in policy_input["workflows"]))
         self.assertNotIn(
             "pull_request_target",
@@ -1208,7 +1210,7 @@ class CatalogSchemaTest(unittest.TestCase):
         repository_resource = repository_module.split(
             'resource "github_repository" "this" {',
             1,
-        )[1].split('resource "github_repository_dependabot_security_updates"', 1)[0]
+        )[1].split('resource "github_repository_custom_property"', 1)[0]
 
         self.assertNotIn("prevent_destroy", environment_resource)
         self.assertNotIn("prevent_destroy", deployment_policy_resource)

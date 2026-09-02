@@ -24,7 +24,6 @@ locals {
     ]...
   )
 
-  dependabot_repositories = local.repositories
 }
 
 resource "github_repository" "this" {
@@ -51,7 +50,6 @@ resource "github_repository" "this" {
   has_discussions = each.value.features.discussions
   has_downloads   = each.value.features.downloads
 
-  vulnerability_alerts        = each.value.security.vulnerability_alerts
   web_commit_signoff_required = var.web_commit_signoff_required
 
   dynamic "security_and_analysis" {
@@ -95,13 +93,6 @@ resource "github_repository" "this" {
       error_message = "Direct collaborators are prohibited; grant repository access through teams."
     }
   }
-}
-
-resource "github_repository_dependabot_security_updates" "this" {
-  for_each = local.dependabot_repositories
-
-  repository = github_repository.this[each.key].name
-  enabled    = each.value.security.dependabot_security_updates
 }
 
 resource "github_actions_repository_access_level" "this" {

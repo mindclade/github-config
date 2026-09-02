@@ -67,8 +67,6 @@ output "deployment_preflight" {
       managed = false
       desired = {
         dependency_graph_required                = var.security_policy.dependency_graph_required
-        dependabot_alerts_required               = var.security_policy.dependabot_alerts_required
-        dependabot_security_updates_required     = var.security_policy.dependabot_security_updates_required
         advanced_security_required               = var.security_policy.advanced_security_required
         code_scanning_default_setup_required     = var.security_policy.code_scanning_default_setup_required
         secret_scanning_required                 = var.security_policy.secret_scanning_required

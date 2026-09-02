@@ -25,9 +25,8 @@ variable "repositories" {
       squash_merge_commit_message = string
     })
     security = object({
-      vulnerability_alerts            = bool
-      dependabot_security_updates     = bool
       advanced_security               = bool
+      code_scanning_mode              = string
       secret_scanning                 = bool
       secret_scanning_push_protection = bool
     })

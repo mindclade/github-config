@@ -56,8 +56,7 @@ var managedWriteTypes = map[string]struct{}{
 	"github_repository":         {}, "github_repository_collaborator": {},
 	"github_repository_custom_property": {}, "github_repository_environment": {},
 	"github_repository_environment_deployment_policy": {}, "github_team": {},
-	"github_repository_dependabot_security_updates": {},
-	"github_team_membership":                        {}, "github_team_repository": {},
+	"github_team_membership": {}, "github_team_repository": {},
 }
 
 // managedWritePaths is the exact provider argument surface assigned by the
@@ -117,7 +116,7 @@ var managedWritePaths = map[string][]string{
 		"/delete_branch_on_merge", "/allow_auto_merge", "/allow_merge_commit", "/allow_rebase_merge",
 		"/allow_squash_merge", "/allow_update_branch", "/squash_merge_commit_title", "/squash_merge_commit_message",
 		"/has_issues", "/has_projects", "/has_wiki", "/has_discussions", "/has_downloads",
-		"/vulnerability_alerts", "/web_commit_signoff_required", "/security_and_analysis",
+		"/web_commit_signoff_required", "/security_and_analysis",
 		"/security_and_analysis/*/advanced_security", "/security_and_analysis/*/advanced_security/*/status",
 		"/security_and_analysis/*/secret_scanning", "/security_and_analysis/*/secret_scanning/*/status",
 		"/security_and_analysis/*/secret_scanning_push_protection", "/security_and_analysis/*/secret_scanning_push_protection/*/status",
@@ -143,7 +142,6 @@ var managedWritePaths = map[string][]string{
 	"github_repository_environment_deployment_policy": {
 		"/repository", "/environment", "/branch_pattern", "/tag_pattern",
 	},
-	"github_repository_dependabot_security_updates": {"/repository", "/enabled"},
 	"github_team":            {"/name", "/description", "/privacy"},
 	"github_team_membership": {"/team_id", "/username", "/role"},
 	"github_team_repository": {"/team_id", "/repository", "/permission"},
@@ -172,7 +170,6 @@ var knownComputedWritePaths = map[string][]string{
 	"github_repository_custom_property":               {"/id", "/repository_id"},
 	"github_repository_environment":                   {"/id", "/repository_id"},
 	"github_repository_environment_deployment_policy": {"/id", "/repository_id", "/policy_id"},
-	"github_repository_dependabot_security_updates":   {"/id"},
 	"github_team":            {"/id", "/etag", "/members_count", "/node_id", "/slug", "/parent_team_read_id", "/parent_team_read_slug"},
 	"github_team_membership": {"/id", "/etag"},
 	"github_team_repository": {"/id", "/etag"},
@@ -1861,10 +1858,6 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 			if !catalogEnvironmentVariableAfterState(address, after, catalog) {
 				add("unknown_change", "environment variable after-state does not exactly match one source-qualified compiled-catalog handoff")
 			}
-		case "github_repository_dependabot_security_updates":
-			if !catalogDependabotAfterState(address, after, catalog) {
-				add("unknown_change", "Dependabot security-updates after-state does not exactly match the compiled catalog")
-			}
 		case "github_actions_repository_access_level":
 			if !catalogRepositoryActionsAccessAfterState(address, after, catalog) {
 				add("unknown_change", "repository Actions access after-state does not exactly match the compiled catalog")
@@ -1935,11 +1928,6 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 		}
 		if preventSelfReview, known := after["prevent_self_review"].(bool); !known || !preventSelfReview {
 			add("environment_bypass", "protected-environment after-state permits or ambiguously permits self-review")
-		}
-	}
-	if resourceName == "github_repository_dependabot_security_updates" && (actionClass == "create" || actionClass == "update") {
-		if enabled, known := after["enabled"].(bool); !known || !enabled {
-			add("security_weakening", "Dependabot security updates are disabled or unknown in the resource after-state")
 		}
 	}
 	if resourceName == "github_actions_repository_access_level" && actionClass == "update" && !equalPlanMaps(before, after) {
@@ -2094,16 +2082,13 @@ func classifyChange(resourceType, address, actionClass string, change, catalog, 
 		}
 		if isProtectiveBoolean(lowerKey) && boolTransition(oldValue, newValue, true, false) {
 			class := "protection_weakening"
-			if strings.Contains(lowerKey, "security") || strings.Contains(lowerKey, "scanning") || strings.Contains(lowerKey, "vulnerability") || strings.Contains(lowerKey, "dependabot") {
+			if strings.Contains(lowerKey, "security") || strings.Contains(lowerKey, "scanning") || strings.Contains(lowerKey, "vulnerability") {
 				class = "security_weakening"
 			}
 			add(class, "a required protection changes from enabled to disabled")
 		}
 		if lowerKey == "status" && resourceName == "github_repository" && strings.EqualFold(fmt.Sprint(oldValue), "enabled") && !strings.EqualFold(fmt.Sprint(newValue), "enabled") {
 			add("security_weakening", "a repository security-and-analysis control is disabled")
-		}
-		if lowerKey == "enabled" && resourceName == "github_repository_dependabot_security_updates" && boolTransition(oldValue, newValue, true, false) {
-			add("security_weakening", "Dependabot security updates are disabled")
 		}
 		if (strings.HasPrefix(lowerKey, "members_can_") || strings.HasPrefix(lowerKey, "allow_")) && boolTransition(oldValue, newValue, false, true) {
 			add("privilege_expansion", "an organization or repository capability expands")
@@ -2909,9 +2894,6 @@ func catalogRepositoryAfterState(address string, after, catalog map[string]any) 
 		}
 	}
 	security, _ := repository["security"].(map[string]any)
-	if !exactBoolField(after, "vulnerability_alerts", boolMapField(security, "vulnerability_alerts")) {
-		return false
-	}
 	organization, _ := catalog["organization"].(map[string]any)
 	if !exactBoolField(after, "web_commit_signoff_required", boolMapField(organization, "web_commit_signoff_required")) {
 		return false
@@ -3568,23 +3550,6 @@ func catalogEnvironmentAfterState(address string, after, catalog, observed map[s
 	return equalAuthoritySets(expectedReviewers, actualReviewers)
 }
 
-func catalogDependabotAfterState(address string, after, catalog map[string]any) bool {
-	if after == nil || catalog == nil {
-		return false
-	}
-	key, ok := terraformInstanceKey(address)
-	if !ok || !exactIndexedAddress(address, "module.repository_governance.github_repository_dependabot_security_updates.this", key) {
-		return false
-	}
-	repositories, _ := catalog["repositories"].(map[string]any)
-	repository, _ := repositories[key].(map[string]any)
-	security, _ := repository["security"].(map[string]any)
-	expectedEnabled, expectedKnown := security["dependabot_security_updates"].(bool)
-	actualEnabled, actualKnown := after["enabled"].(bool)
-	return repository != nil && expectedKnown && actualKnown && expectedEnabled == actualEnabled &&
-		stringMapField(after, "repository") == stringMapField(repository, "name")
-}
-
 func catalogActionsAfterState(resourceType, address string, after, catalog map[string]any) bool {
 	if after == nil || catalog == nil {
 		return false
@@ -4237,7 +4202,7 @@ func boolTransition(oldValue, newValue any, oldExpected, newExpected bool) bool 
 }
 
 func isProtectiveBoolean(key string) bool {
-	for _, fragment := range []string{"required", "require_", "dismiss_stale", "protected", "prevent_", "two_factor", "signatures", "non_fast_forward", "deletion", "update", "advanced_security", "secret_scanning", "vulnerability", "dependabot", "code_scanning", "web_commit_signoff"} {
+	for _, fragment := range []string{"required", "require_", "dismiss_stale", "protected", "prevent_", "two_factor", "signatures", "non_fast_forward", "deletion", "update", "advanced_security", "secret_scanning", "vulnerability", "code_scanning", "web_commit_signoff"} {
 		if strings.Contains(key, fragment) {
 			return true
 		}
@@ -4427,7 +4392,7 @@ func containsAuthorityUnknown(value any, path string) bool {
 		for _, fragment := range []string{
 			"permission", "role", "visibility", "private", "public", "action", "workflow",
 			"oidc", "claim", "review", "approval", "bypass", "protected", "security",
-			"scanning", "vulnerability", "dependabot", "enforcement", "rules", "member",
+			"scanning", "vulnerability", "enforcement", "rules", "member",
 			"collaborator", "repository", "team", "two_factor",
 		} {
 			if strings.Contains(path, fragment) {

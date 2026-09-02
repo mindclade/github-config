@@ -505,7 +505,6 @@ jobs:
             --slurpfile catalog "$RUNNER_TEMP/catalog.json" \
             --slurpfile preflight "$RUNNER_TEMP/preflight.json" '
               {
-                adopted_dependabot_security_updates: ($preflight[0].adopted_dependabot_security_updates // {}),
                 catalog: $catalog[0],
                 adopted_environment_ids: ($preflight[0].adopted_environment_ids // {}),
                 adopted_environment_policy_ids: ($preflight[0].adopted_environment_policy_ids // {}),

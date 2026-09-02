@@ -159,9 +159,8 @@ class ObservedStateDiffTest(unittest.TestCase):
                 "security": pick(
                     value["security"],
                     [
-                        "vulnerability_alerts",
-                        "dependabot_security_updates",
                         "advanced_security",
+                        "code_scanning_mode",
                         "secret_scanning",
                         "secret_scanning_push_protection",
                     ],
@@ -240,8 +239,6 @@ class ObservedStateDiffTest(unittest.TestCase):
                 [
                     "security_manager_team",
                     "dependency_graph_required",
-                    "dependabot_alerts_required",
-                    "dependabot_security_updates_required",
                     "advanced_security_required",
                     "code_scanning_default_setup_required",
                     "secret_scanning_required",
@@ -1073,7 +1070,7 @@ class ObservedStateDiffTest(unittest.TestCase):
         server.retry_counts = {}
         server.retry_once = {
             "/orgs/mindclade",
-            "/repos/mindclade/github-config/vulnerability-alerts",
+            "/repos/mindclade/github-config/dependency-graph/sbom",
             "/repos/mindclade/github-config/code-scanning/default-setup",
         }
         server.retry_always = set()
@@ -1417,6 +1414,15 @@ class ObservedStateDiffTest(unittest.TestCase):
         requested_paths = {urlparse(path).path for path, _ in requests}
         self.assertIn("/orgs/mindclade/organization-roles/77/teams", requested_paths)
         self.assertNotIn("/orgs/mindclade/security-managers", requested_paths)
+        for retired in (
+            "/repos/mindclade/github-config/vulnerability-alerts",
+            "/repos/mindclade/github-config/automated-security-fixes",
+        ):
+            self.assertNotIn(
+                retired,
+                requested_paths,
+                "Dependabot endpoints must not be observed after the Renovate migration",
+            )
         self.assertIn(
             "/repos/mindclade/github-config/actions/permissions/access",
             requested_paths,
